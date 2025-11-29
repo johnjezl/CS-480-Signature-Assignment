@@ -74,18 +74,18 @@ class SyntheticFaceletGenerator:
 
         # Add realistic variations:
 
-        # 1. Slight color variation (±10% RGB) - simulates lighting variations
+        # Slight color variation (±10% RGB) - simulates lighting variations
         variation = np.random.uniform(-0.1, 0.1, size=(size, size, 3))
         img = img.astype(np.float32)
         img = img * (1 + variation)
         img = np.clip(img, 0, 255).astype(np.uint8)
 
-        # 2. Add texture/grain - simulates camera sensor noise
+        # Add texture/grain - simulates camera sensor noise
         noise = np.random.normal(0, 5, (size, size, 3))
         img = img.astype(np.float32) + noise
         img = np.clip(img, 0, 255).astype(np.uint8)
 
-        # 3. Add black borders (simulate grid lines between facelets)
+        # Add black borders (simulate grid lines between facelets)
         border_width = max(1, size // 32)  # Scale border with image size
         img[0:border_width, :] = [0, 0, 0]  # Top border
         img[-border_width:, :] = [0, 0, 0]  # Bottom border
@@ -249,12 +249,3 @@ if __name__ == "__main__":
         size=64
     )
     print("\nDataset statistics:", stats)
-
-    # Uncomment below to generate the FULL dataset (5100 images - takes a few minutes)
-    # print("\nGenerating FULL dataset (5100 images) with MIXED palettes...")
-    # stats = generator.generate_dataset(
-    #     output_dir='training_dataset/synthetic',
-    #     samples_per_color=850,
-    #     size=64
-    # )
-    # print("Full dataset generation complete!")
