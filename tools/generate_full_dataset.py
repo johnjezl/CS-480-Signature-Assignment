@@ -5,7 +5,7 @@ This script generates 5,100 synthetic facelet images (850 per color)
 with mixed color palettes to support multiple cube brands.
 """
 
-from SyntheticFaceletGenerator import SyntheticFaceletGenerator
+from tools.SyntheticFaceletGenerator import SyntheticFaceletGenerator
 import time
 
 def main():
