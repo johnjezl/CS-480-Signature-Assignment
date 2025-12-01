@@ -119,23 +119,43 @@ class FaceletSegmenter:
         # Use saturation channel to find colorful regions (Rubik's cubes are colorful)
         saturation = hsv[:, :, 1]
 
-        # Threshold saturation to find colorful areas
-        _, sat_mask = cv2.threshold(saturation, 50, 255, cv2.THRESH_BINARY)
+        # Threshold saturation to find colorful areas (lower threshold for white/yellow)
+        _, sat_mask = cv2.threshold(saturation, 30, 255, cv2.THRESH_BINARY)
 
-        # Apply morphological operations to clean up
-        kernel = np.ones((5, 5), np.uint8)
-        sat_mask = cv2.morphologyEx(sat_mask, cv2.MORPH_CLOSE, kernel)
-        sat_mask = cv2.morphologyEx(sat_mask, cv2.MORPH_OPEN, kernel)
+        # Use coarse edge detection to find cube boundary (not fine details like logos)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Find contours in saturation mask
-        contours, _ = cv2.findContours(sat_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Heavy blur to smooth out logos and internal details
+        blurred = cv2.GaussianBlur(gray, (15, 15), 0)
+
+        # Detect only strong edges with high thresholds (outer cube boundaries)
+        edges = cv2.Canny(blurred, 60, 180)
+
+        # Morphological operations to connect edges and fill the cube region
+        kernel = np.ones((7, 7), np.uint8)
+        edges_filled = cv2.dilate(edges, kernel, iterations=4)
+        edges_filled = cv2.morphologyEx(edges_filled, cv2.MORPH_CLOSE, kernel, iterations=3)
+
+        # Combine saturation (for color) and filled edges (for structure)
+        # Prioritize saturation to avoid false detections from logos
+        combined_mask = cv2.addWeighted(sat_mask, 0.7, edges_filled, 0.3, 0)
+        _, combined_mask = cv2.threshold(combined_mask, 100, 255, cv2.THRESH_BINARY)
+
+        # Final cleanup: fill holes inside the cube region
+        kernel_large = np.ones((11, 11), np.uint8)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel_large, iterations=2)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+        # Find contours in combined mask
+        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         best_bbox = None
         best_score = 0
 
         # Expected cube size range (as fraction of image dimensions)
-        min_size = min(width, height) * 0.1  # At least 10% of smallest dimension
-        max_size = min(width, height) * 0.8  # At most 80% of smallest dimension
+        # Cube must be reasonably large to avoid detecting individual facelets or logos
+        min_size = min(width, height) * 0.15  # At least 15% of smallest dimension
+        max_size = min(width, height) * 0.85  # At most 85% of smallest dimension
 
         for contour in contours:
             area = cv2.contourArea(contour)
@@ -149,10 +169,17 @@ class FaceletSegmenter:
             if w < min_size or h < min_size or w > max_size or h > max_size:
                 continue
 
+            # Reject regions too close to image edges (likely background)
+            # Use proportional margin (2% of image dimension)
+            margin_x = int(width * 0.02)
+            margin_y = int(height * 0.02)
+            if x < margin_x or y < margin_y or x + w > width - margin_x or y + h > height - margin_y:
+                continue
+
             # Calculate squareness (cube faces should be square-ish)
             squareness = min(w, h) / max(w, h) if max(w, h) > 0 else 0
 
-            if squareness < 0.6:  # Too rectangular, not cube-like
+            if squareness < 0.75:  # Cube faces must be quite square
                 continue
 
             # Score based on size, squareness, and color saturation
@@ -160,8 +187,13 @@ class FaceletSegmenter:
             avg_saturation = roi_sat.mean()
 
             # Prefer medium-sized, square regions with high color saturation
+            # Heavily penalize non-square regions by squaring the squareness factor
             size_score = (w * h) / (max_size * max_size)  # Normalize by max size
-            score = squareness * size_score * (avg_saturation / 255.0)
+
+            # Bonus for being very square (0.95+)
+            squareness_bonus = 1.5 if squareness > 0.95 else 1.0
+
+            score = (squareness ** 2) * size_score * (avg_saturation / 255.0) * squareness_bonus
 
             if score > best_score:
                 best_score = score
@@ -169,11 +201,23 @@ class FaceletSegmenter:
 
         # Fallback: use centered square region
         if best_bbox is None:
-            # Use a reasonable centered square (about 1/3 of image size)
-            size = min(width, height) // 3
-            x = (width - size) // 2
-            y = (height - size) // 2
-            best_bbox = BoundingBox(x, y, size, size)
+            # Check if the image is already mostly cube (pre-cropped/bounded)
+            # If image is square-ish and reasonably sized, use most of it
+            image_squareness = min(width, height) / max(width, height)
+            image_is_small = max(width, height) < 1500  # Likely a cropped image
+
+            if image_squareness > 0.8 and image_is_small:
+                # Image is already cropped to cube - use 90% of it with margins
+                size = int(min(width, height) * 0.9)
+                x = (width - size) // 2
+                y = (height - size) // 2
+                best_bbox = BoundingBox(x, y, size, size)
+            else:
+                # Original large image - use conservative centered region
+                size = min(width, height) // 3
+                x = (width - size) // 2
+                y = (height - size) // 2
+                best_bbox = BoundingBox(x, y, size, size)
 
         return best_bbox
 
