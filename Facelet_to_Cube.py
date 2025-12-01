@@ -1,4 +1,4 @@
-from Cube_class import Cube
+from Cube import Cube
 
 corner_notation = {
     "YGO": 0,
