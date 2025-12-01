@@ -125,7 +125,33 @@ def get_image_path(prompt="Enter the path to a Rubik's Cube face image (jpg or p
     return image_path
 
 
-def process_single_face(image_path, segmenter, classifier):
+def save_facelets(facelets, output_dir="output_facelets", face_name=None):
+    """
+    Save each facelet as a separate jpg file.
+
+    Args:
+        facelets: numpy array of shape (3, 3, 64, 64, 3)
+        output_dir: Directory to save facelet images
+        face_name: Optional face name prefix for filenames
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Generate prefix based on face name
+    prefix = f"{face_name}_" if face_name else ""
+
+    print(f"Saving facelet images to {output_dir}/...")
+    for row in range(3):
+        for col in range(3):
+            facelet = facelets[row, col]
+            filename = f"{prefix}facelet_{row}_{col}.jpg"
+            filepath = os.path.join(output_dir, filename)
+            cv2.imwrite(filepath, facelet)
+
+    print(f"Saved 9 facelet images to {output_dir}/")
+
+
+def process_single_face(image_path, segmenter, classifier, face_name=None):
     """
     Process a single face image: segment and classify.
 
@@ -133,6 +159,7 @@ def process_single_face(image_path, segmenter, classifier):
         image_path: Path to the image file
         segmenter: FaceletSegmenter instance
         classifier: FaceletColorClassifier instance
+        face_name: Optional face name for saving facelets
 
     Returns:
         classifications or None on error
@@ -151,6 +178,9 @@ def process_single_face(image_path, segmenter, classifier):
     facelets = segmenter.segment(image)
     segment_time = time.time() - start_time
     print(f"Facelets shape: {facelets.shape} (took {segment_time:.3f}s)")
+
+    # Save facelet images
+    save_facelets(facelets, output_dir="output_facelets", face_name=face_name)
 
     # Classify the colors
     print("Classifying facelet colors...")
@@ -190,13 +220,90 @@ def single_face_mode():
         return
 
     # Process the face
-    classifications = process_single_face(image_path, segmenter, classifier)
+    classifications = process_single_face(image_path, segmenter, classifier, face_name="single")
     if classifications is None:
         return
 
     # Output results
     face_string, _ = print_classification_results(classifications)
     print(f"\nScan complete! Face string: {face_string}")
+
+
+def get_directory_path():
+    """
+    Prompt user for a directory path and validate it.
+
+    Returns:
+        directory_path if valid, None if user wants to cancel
+    """
+    print("\nEnter the path to a directory containing cube face images:")
+    print("(Expected files: up, down, front, back, left, right with .jpg or .png extension)")
+    print("(Enter 'q' to cancel)")
+    dir_path = input("> ").strip()
+
+    # Check for cancel
+    if dir_path.lower() == 'q':
+        return None
+
+    # Remove quotes if present
+    if dir_path.startswith('"') and dir_path.endswith('"'):
+        dir_path = dir_path[1:-1]
+    if dir_path.startswith("'") and dir_path.endswith("'"):
+        dir_path = dir_path[1:-1]
+
+    # Validate directory exists
+    if not os.path.exists(dir_path):
+        print(f"Error: Directory not found: {dir_path}")
+        return None
+
+    if not os.path.isdir(dir_path):
+        print(f"Error: Path is not a directory: {dir_path}")
+        return None
+
+    return dir_path
+
+
+def find_face_images(directory):
+    """
+    Find face images in a directory by looking for files named
+    up, down, front, back, left, right (case-insensitive).
+
+    Args:
+        directory: Path to the directory to search
+
+    Returns:
+        Dictionary mapping face_key to file path, or None if not all faces found
+    """
+    valid_extensions = ['.jpg', '.jpeg', '.png']
+    face_files = {}
+
+    # Get all files in directory
+    try:
+        files = os.listdir(directory)
+    except OSError as e:
+        print(f"Error reading directory: {e}")
+        return None
+
+    # Look for each face
+    for face_key in FACE_NAMES:
+        found = False
+        for filename in files:
+            name, ext = os.path.splitext(filename)
+            if name.lower() == face_key and ext.lower() in valid_extensions:
+                face_files[face_key] = os.path.join(directory, filename)
+                found = True
+                break
+
+        if not found:
+            print(f"Error: Could not find image for '{face_key}' face")
+            print(f"  Expected: {face_key}.jpg, {face_key}.png, or {face_key}.jpeg")
+
+    # Check if all faces were found
+    if len(face_files) != 6:
+        print(f"\nFound {len(face_files)}/6 face images.")
+        return None
+
+    return face_files
 
 
 def full_cube_mode():
@@ -206,10 +313,28 @@ def full_cube_mode():
     print("\n" + "=" * 50)
     print("  FULL CUBE SOLVER MODE")
     print("=" * 50)
-    print("\nYou will be prompted to enter images for all 6 faces of the cube.")
-    print("Face order: Up (Yellow), Down (White), Front (Blue),")
-    print("            Back (Green), Left (Orange), Right (Red)")
-    print("\nMake sure to orient the cube correctly for each face!")
+    print("\nProvide a directory containing 6 face images:")
+    print("  Required files: up, down, front, back, left, right")
+    print("  Supported formats: .jpg, .jpeg, .png")
+    print("  (filenames are case-insensitive)")
+
+    # Get directory path
+    dir_path = get_directory_path()
+    if dir_path is None:
+        print("Cancelled.")
+        return
+
+    # Find face images
+    print(f"\nSearching for face images in: {dir_path}")
+    face_files = find_face_images(dir_path)
+    if face_files is None:
+        print("\nAborting cube solve.")
+        return
+
+    # Show found files
+    print("\nFound all 6 face images:")
+    for face_key in FACE_NAMES:
+        print(f"  {face_key}: {os.path.basename(face_files[face_key])}")
 
     # Initialize components with timing
     print("\nInitializing FaceletSegmenter...")
@@ -233,14 +358,12 @@ def full_cube_mode():
         print(f"  FACE {i+1}/6: {face_display}")
         print("#" * 50)
 
-        # Get image path
-        image_path = get_image_path(f"Enter image for {face_display} face:")
-        if image_path is None:
-            print("\nCancelled. Aborting cube solve.")
-            return
+        image_path = face_files[face_key]
+        # Use the original filename (without extension) as the facelet prefix
+        original_filename = os.path.splitext(os.path.basename(image_path))[0]
 
         # Process the face
-        classifications = process_single_face(image_path, segmenter, classifier)
+        classifications = process_single_face(image_path, segmenter, classifier, face_name=original_filename)
         if classifications is None:
             print("\nError processing face. Aborting cube solve.")
             return
@@ -252,11 +375,6 @@ def full_cube_mode():
         cube_data[face_key] = face_array
 
         print(f"\n{face_display} face captured successfully!")
-
-        # Show progress
-        remaining = 6 - (i + 1)
-        if remaining > 0:
-            print(f"\n{remaining} face(s) remaining...")
 
     # All faces captured - prepare solver input
     print("\n" + "=" * 50)
