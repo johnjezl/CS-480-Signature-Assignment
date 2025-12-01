@@ -95,8 +95,8 @@ class FaceletSegmenter:
         """
         Attempt to auto-detect the cube face region in the image.
 
-        This implementation tries to find the largest square-like contour.
-        Falls back to using the largest centered square that fits.
+        Uses color saturation and contour analysis to find the colorful cube region.
+        Falls back to using a centered square if detection fails.
 
         Args:
             image: Input image
@@ -106,55 +106,71 @@ class FaceletSegmenter:
         """
         height, width = image.shape[:2]
 
-        # Convert to grayscale for edge detection
+        # Convert to HSV for color-based detection
         if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         else:
-            gray = image
+            # Grayscale image, use fallback
+            size = min(width, height) // 2
+            x = (width - size) // 2
+            y = (height - size) // 2
+            return BoundingBox(x, y, size, size)
 
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Use saturation channel to find colorful regions (Rubik's cubes are colorful)
+        saturation = hsv[:, :, 1]
 
-        # Edge detection
-        edges = cv2.Canny(blurred, 50, 150)
+        # Threshold saturation to find colorful areas
+        _, sat_mask = cv2.threshold(saturation, 50, 255, cv2.THRESH_BINARY)
 
-        # Dilate edges to connect nearby lines
-        kernel = np.ones((3, 3), np.uint8)
-        edges = cv2.dilate(edges, kernel, iterations=2)
+        # Apply morphological operations to clean up
+        kernel = np.ones((5, 5), np.uint8)
+        sat_mask = cv2.morphologyEx(sat_mask, cv2.MORPH_CLOSE, kernel)
+        sat_mask = cv2.morphologyEx(sat_mask, cv2.MORPH_OPEN, kernel)
 
-        # Find contours
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Find contours in saturation mask
+        contours, _ = cv2.findContours(sat_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         best_bbox = None
         best_score = 0
 
+        # Expected cube size range (as fraction of image dimensions)
+        min_size = min(width, height) * 0.1  # At least 10% of smallest dimension
+        max_size = min(width, height) * 0.8  # At most 80% of smallest dimension
+
         for contour in contours:
-            # Approximate the contour to a polygon
-            epsilon = 0.02 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
+            area = cv2.contourArea(contour)
+            if area < min_size * min_size:
+                continue
 
-            # Look for quadrilaterals (4 corners)
-            if len(approx) == 4:
-                x, y, w, h = cv2.boundingRect(approx)
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
 
-                # Score based on size and squareness
-                area = w * h
-                squareness = min(w, h) / max(w, h) if max(w, h) > 0 else 0
+            # Filter by size
+            if w < min_size or h < min_size or w > max_size or h > max_size:
+                continue
 
-                # Prefer larger, more square regions
-                score = area * squareness
+            # Calculate squareness (cube faces should be square-ish)
+            squareness = min(w, h) / max(w, h) if max(w, h) > 0 else 0
 
-                if score > best_score and squareness > 0.7:
-                    best_score = score
-                    best_bbox = BoundingBox(x, y, w, h)
+            if squareness < 0.6:  # Too rectangular, not cube-like
+                continue
+
+            # Score based on size, squareness, and color saturation
+            roi_sat = saturation[y:y+h, x:x+w]
+            avg_saturation = roi_sat.mean()
+
+            # Prefer medium-sized, square regions with high color saturation
+            size_score = (w * h) / (max_size * max_size)  # Normalize by max size
+            score = squareness * size_score * (avg_saturation / 255.0)
+
+            if score > best_score:
+                best_score = score
+                best_bbox = BoundingBox(x, y, w, h)
 
         # Fallback: use centered square region
         if best_bbox is None:
-            # Use the largest centered square that fits
-            size = min(width, height)
-            margin = int(size * 0.1)  # 10% margin
-            size -= 2 * margin
-
+            # Use a reasonable centered square (about 1/3 of image size)
+            size = min(width, height) // 3
             x = (width - size) // 2
             y = (height - size) // 2
             best_bbox = BoundingBox(x, y, size, size)
@@ -197,7 +213,7 @@ class FaceletSegmenter:
 
     def _split_into_facelets(self, face_region: np.ndarray) -> List[np.ndarray]:
         """
-        Split the square face region into 9 equal facelets.
+        Split the square face region into 9 facelets, avoiding black borders.
 
         Args:
             face_region: Square image of the cube face
@@ -207,19 +223,38 @@ class FaceletSegmenter:
         """
         height, width = face_region.shape[:2]
 
-        # Calculate facelet dimensions
+        # Calculate base facelet dimensions
         facelet_h = height // 3
         facelet_w = width // 3
+
+        # Add margin to avoid black borders between facelets
+        # Typically, borders are about 5-10% of facelet size
+        margin_h = int(facelet_h * 0.08)  # 8% margin
+        margin_w = int(facelet_w * 0.08)
 
         facelets = []
 
         # Extract each facelet (row by row, left to right)
         for row in range(3):
             for col in range(3):
+                # Base coordinates
                 y_start = row * facelet_h
                 y_end = (row + 1) * facelet_h if row < 2 else height
                 x_start = col * facelet_w
                 x_end = (col + 1) * facelet_w if col < 2 else width
+
+                # Apply margin to avoid borders
+                # For edges touching the outer boundary, use less margin
+                top_margin = margin_h if row > 0 else margin_h // 2
+                bottom_margin = margin_h if row < 2 else margin_h // 2
+                left_margin = margin_w if col > 0 else margin_w // 2
+                right_margin = margin_w if col < 2 else margin_w // 2
+
+                # Apply margins
+                y_start = min(y_start + top_margin, y_end - 1)
+                y_end = max(y_end - bottom_margin, y_start + 1)
+                x_start = min(x_start + left_margin, x_end - 1)
+                x_end = max(x_end - right_margin, x_start + 1)
 
                 facelet = face_region[y_start:y_end, x_start:x_end].copy()
                 facelets.append(facelet)
