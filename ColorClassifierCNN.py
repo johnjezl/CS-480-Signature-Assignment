@@ -1,5 +1,5 @@
 """
-Task B1.2: Small CNN Training
+Color Classifier CNN Model Definition
 Lightweight 3-layer CNN for Rubik's Cube Color Classification
 
 Architecture:
@@ -7,7 +7,6 @@ Architecture:
 - Custom design optimized for 6-color classification
 - Target: <5MB model, >95% accuracy, <10ms inference
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
