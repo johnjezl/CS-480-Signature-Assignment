@@ -51,17 +51,20 @@ class FaceletSegmenter:
         self,
         image: np.ndarray,
         bbox: Optional[BoundingBox] = None
-    ) -> List[np.ndarray]:
+    ) -> np.ndarray:
         """
         Segment a cube face image into 9 facelets.
 
         Args:
             image: Input image (BGR format from OpenCV or RGB)
+                   Expected shape: (H, W, 3) where H=height, W=width, 3=BGR channels
             bbox: Optional bounding box for the cube face region.
                   If None, attempts to auto-detect or uses full image.
 
         Returns:
-            List of 9 numpy arrays, each 64x64x3, ordered top-left to bottom-right
+            numpy array of shape (3, 3, 64, 64, 3) representing a 3x3 grid of facelets
+            Access pattern: [row][col][height][width][channel]
+            Ordering: row 0 = top row, col 0 = left column
         """
         if bbox is None:
             bbox = self._detect_face_region(image)
@@ -79,7 +82,14 @@ class FaceletSegmenter:
             for facelet in facelets
         ]
 
-        return resized_facelets
+        # Reshape from list of 9 facelets to 3x3 grid
+        # Convert list to array: (9, 64, 64, 3)
+        facelets_array = np.array(resized_facelets, dtype=np.uint8)
+
+        # Reshape to 3x3 grid: (3, 3, 64, 64, 3)
+        facelets_grid = facelets_array.reshape(3, 3, self.output_size, self.output_size, 3)
+
+        return facelets_grid
 
     def _detect_face_region(self, image: np.ndarray) -> BoundingBox:
         """
@@ -220,7 +230,7 @@ class FaceletSegmenter:
         self,
         image_path: str,
         bbox: Optional[BoundingBox] = None
-    ) -> List[np.ndarray]:
+    ) -> np.ndarray:
         """
         Convenience method to segment directly from an image file.
 
@@ -229,7 +239,7 @@ class FaceletSegmenter:
             bbox: Optional bounding box for the cube face region
 
         Returns:
-            List of 9 facelet images
+            numpy array of shape (3, 3, 64, 64, 3) representing a 3x3 grid of facelets
         """
         image = cv2.imread(image_path)
         if image is None:
@@ -238,7 +248,7 @@ class FaceletSegmenter:
 
     def save_facelets(
         self,
-        facelets: List[np.ndarray],
+        facelets: np.ndarray,
         output_dir: str,
         prefix: str = "facelet"
     ) -> List[str]:
@@ -246,7 +256,7 @@ class FaceletSegmenter:
         Save facelet images to files.
 
         Args:
-            facelets: List of 9 facelet images
+            facelets: Grid of facelets with shape (3, 3, 64, 64, 3)
             output_dir: Directory to save images
             prefix: Filename prefix (default "facelet")
 
@@ -257,10 +267,14 @@ class FaceletSegmenter:
         os.makedirs(output_dir, exist_ok=True)
 
         saved_paths = []
-        for i, facelet in enumerate(facelets):
-            path = os.path.join(output_dir, f"{prefix}_{i}.png")
-            cv2.imwrite(path, facelet)
-            saved_paths.append(path)
+        idx = 0
+        for row in range(3):
+            for col in range(3):
+                facelet = facelets[row, col]
+                path = os.path.join(output_dir, f"{prefix}_{idx}.png")
+                cv2.imwrite(path, facelet)
+                saved_paths.append(path)
+                idx += 1
 
         return saved_paths
 
@@ -269,17 +283,19 @@ def segment_cube_face(
     image: np.ndarray,
     bbox: Optional[BoundingBox] = None,
     output_size: int = 64
-) -> List[np.ndarray]:
+) -> np.ndarray:
     """
     Functional interface for facelet segmentation.
 
     Args:
         image: Input image containing a Rubik's cube face
+               Expected shape: (H, W, 3) in BGR format
         bbox: Optional bounding box for the face region
         output_size: Size of output facelet images (default 64)
 
     Returns:
-        List of 9 numpy arrays, each output_size x output_size x 3
+        numpy array of shape (3, 3, output_size, output_size, 3)
+        representing a 3x3 grid of facelets in BGR format
     """
     segmenter = FaceletSegmenter(output_size=output_size)
     return segmenter.segment(image, bbox)
