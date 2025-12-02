@@ -212,7 +212,55 @@ def log_face_and_facelets(image, facelets, side_name, serial):
     print(f"Logged face and 9 facelets to {LOG_DIR}/ (serial: {serial_str})")
 
 
-def process_single_face(image_path, segmenter, classifier, side_name=None):
+def display_face_and_facelets(image, facelets, window_name="Face and Facelets"):
+    """
+    Display the face image alongside a 3x3 grid of extracted facelets.
+
+    Args:
+        image: BGR numpy array of the full face image
+        facelets: numpy array of shape (3, 3, 64, 64, 3)
+        window_name: Name for the display window
+    """
+    cell_size = 100  # Size of each facelet display
+    border = 2       # White border around each facelet
+    spacing = 2      # Space between facelets
+
+    bordered_size = cell_size + border * 2
+    grid_size = bordered_size * 3 + spacing * 2
+
+    # Black background for facelet grid
+    facelet_grid = np.zeros((grid_size, grid_size, 3), dtype=np.uint8)
+
+    for row in range(3):
+        for col in range(3):
+            facelet = facelets[row, col]
+            # Resize facelet to cell size
+            facelet_resized = cv2.resize(facelet, (cell_size, cell_size))
+            # Add white border around facelet
+            bordered = cv2.copyMakeBorder(facelet_resized, border, border, border, border,
+                                          cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            # Place in grid
+            y1 = row * (bordered_size + spacing)
+            x1 = col * (bordered_size + spacing)
+            facelet_grid[y1:y1+bordered_size, x1:x1+bordered_size] = bordered
+
+    # Scale face to match facelet grid height
+    scale = grid_size / image.shape[0]
+    new_width = int(image.shape[1] * scale)
+    face_scaled = cv2.resize(image, (new_width, grid_size))
+
+    # Combine face and facelet grid side by side
+    gap = spacing
+    gap_img = np.zeros((grid_size, gap, 3), dtype=np.uint8)
+    combined = np.hstack([face_scaled, gap_img, facelet_grid])
+
+    # Display
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    cv2.imshow(window_name, combined)
+    cv2.waitKey(30)  # Process window events
+
+
+def process_single_face(image_path, segmenter, classifier, side_name=None, display=False):
     """
     Process a single face image from file: segment and classify.
 
@@ -221,6 +269,7 @@ def process_single_face(image_path, segmenter, classifier, side_name=None):
         segmenter: FaceletSegmenter instance
         classifier: FaceletColorClassifier instance
         side_name: Name of the cube side for logging
+        display: If True, show face and facelets on display
 
     Returns:
         classifications or None on error
@@ -233,10 +282,10 @@ def process_single_face(image_path, segmenter, classifier, side_name=None):
         return None
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
 
-    return process_image(image, segmenter, classifier, side_name)
+    return process_image(image, segmenter, classifier, side_name, display)
 
 
-def process_image(image, segmenter, classifier, side_name=None):
+def process_image(image, segmenter, classifier, side_name=None, display=False):
     """
     Process an image (BGR numpy array): segment and classify.
 
@@ -245,6 +294,7 @@ def process_image(image, segmenter, classifier, side_name=None):
         segmenter: FaceletSegmenter instance
         classifier: FaceletColorClassifier instance
         side_name: Name of the cube side for logging (up, down, front, back, left, right)
+        display: If True, show face and facelets on display
 
     Returns:
         classifications or None on error
@@ -257,6 +307,11 @@ def process_image(image, segmenter, classifier, side_name=None):
     facelets = segmenter.segment(image)
     segment_time = time.time() - start_time
     print(f"Facelets shape: {facelets.shape} (took {segment_time:.3f}s)")
+
+    # Display face and facelets if requested
+    if display:
+        window_name = f"Segmented: {side_name}" if side_name else "Segmented Face"
+        display_face_and_facelets(image, facelets, window_name)
 
     # Log face and facelets with serial number
     if side_name:
@@ -576,13 +631,9 @@ def camera_single_face_mode(display=False):
         cv2.imwrite(capture_path, image)
         print(f"Saved captured image to {capture_path}")
 
-        # Display if requested
-        if display:
-            display_image(image, "Captured Face", wait_key=False)
-
         # Process the image
         print("\nProcessing captured image...")
-        classifications = process_image(image, segmenter, classifier, side_name="single")
+        classifications = process_image(image, segmenter, classifier, side_name="single", display=display)
 
         if classifications is None:
             return
@@ -687,7 +738,7 @@ def camera_full_cube_mode(display=False):
 
             # Process the image
             print("\nProcessing captured image...")
-            classifications = process_image(image, segmenter, classifier, side_name=face_key)
+            classifications = process_image(image, segmenter, classifier, side_name=face_key, display=display)
 
             if classifications is None:
                 print("\nError processing face. Aborting cube solve.")

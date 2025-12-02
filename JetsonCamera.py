@@ -12,6 +12,8 @@ import numpy as np
 import time
 import platform
 import os
+import sys
+import select
 
 
 def is_display_available():
@@ -307,10 +309,10 @@ def display_image(image, window_name="Image", wait_key=True):
     Args:
         image: BGR numpy array
         window_name: Name for the display window
-        wait_key: If True, wait for key press before returning
+        wait_key: If True, wait for Enter press before returning
 
     Returns:
-        int: Key code pressed (if wait_key=True), -1 otherwise
+        int: 0 if Enter pressed (if wait_key=True), -1 otherwise
     """
     if image is None:
         print("Error: No image to display")
@@ -324,9 +326,14 @@ def display_image(image, window_name="Image", wait_key=True):
     cv2.imshow(window_name, image)
 
     if wait_key:
-        key = cv2.waitKey(0) & 0xFF
+        print("Press Enter to close the display...")
+        while True:
+            cv2.waitKey(30)
+            if select.select([sys.stdin], [], [], 0.0)[0]:
+                sys.stdin.readline()
+                break
         cv2.destroyWindow(window_name)
-        return key
+        return 0
     return -1
 
 
@@ -395,8 +402,16 @@ def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
 
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(window_name, canvas)
-    print("Press any key to close the display...")
-    cv2.waitKey(0)
+
+    print("Press Enter to close the display...")
+
+    # Keep updating display while waiting for terminal input
+    while True:
+        cv2.waitKey(30)
+        if select.select([sys.stdin], [], [], 0.0)[0]:
+            sys.stdin.readline()
+            break
+
     cv2.destroyWindow(window_name)
 
 

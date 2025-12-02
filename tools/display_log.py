@@ -56,15 +56,16 @@ def main():
             continue
         print(f"  Face loaded: {face_img.shape}")
 
-        # Scale face to reasonable size
-        target_height = 400
-        scale = target_height / face_img.shape[0]
-        new_width = int(face_img.shape[1] * scale)
-        face_img = cv2.resize(face_img, (new_width, target_height))
+        # Load all 9 facelets, add white border to each, then arrange in grid
+        cell_size = 100  # Size of each facelet display
+        border = 2       # White border around each facelet
+        spacing = 2      # Space between facelets (same as border)
 
-        # Load all 9 facelets
-        cell_size = target_height // 3
-        facelet_grid = np.zeros((target_height, target_height, 3), dtype=np.uint8)
+        bordered_size = cell_size + border * 2  # Facelet + border on all sides
+        grid_size = bordered_size * 3 + spacing * 2  # 3 bordered cells + 2 gaps
+
+        # Black background
+        facelet_grid = np.zeros((grid_size, grid_size, 3), dtype=np.uint8)
 
         for row in range(3):
             for col in range(3):
@@ -74,26 +75,30 @@ def main():
                 if os.path.exists(facelet_path):
                     img = cv2.imread(facelet_path)
                     if img is not None:
-                        # Resize to cell size
+                        # Resize facelet to cell size
                         img = cv2.resize(img, (cell_size, cell_size))
+                        # Add white border around facelet
+                        bordered = cv2.copyMakeBorder(img, border, border, border, border,
+                                                       cv2.BORDER_CONSTANT, value=(255, 255, 255))
                         # Place in grid
-                        y1 = row * cell_size
-                        x1 = col * cell_size
-                        facelet_grid[y1:y1+cell_size, x1:x1+cell_size] = img
-                        print(f"  Facelet [{row}][{col}] loaded")
+                        y1 = row * (bordered_size + spacing)
+                        x1 = col * (bordered_size + spacing)
+                        facelet_grid[y1:y1+bordered_size, x1:x1+bordered_size] = bordered
+                        print(f"  Facelet [{row}][{col}] loaded -> grid[{y1}:{y1+bordered_size}, {x1}:{x1+bordered_size}]")
                     else:
                         print(f"  Facelet [{row}][{col}] failed to load")
                 else:
                     print(f"  Facelet [{row}][{col}] not found: {facelet_file}")
 
-        # Combine face and facelet grid side by side
-        gap = 10
-        gap_img = np.zeros((target_height, gap, 3), dtype=np.uint8)
-        combined = np.hstack([face_img, gap_img, facelet_grid])
+        # Scale face to match facelet grid height
+        scale = grid_size / face_img.shape[0]
+        new_width = int(face_img.shape[1] * scale)
+        face_img = cv2.resize(face_img, (new_width, grid_size))
 
-        # Add title
-        cv2.putText(combined, side_name.upper(), (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        # Combine face and facelet grid side by side
+        gap = spacing
+        gap_img = np.zeros((grid_size, gap, 3), dtype=np.uint8)
+        combined = np.hstack([face_img, gap_img, facelet_grid])
 
         # Display
         window_name = f"Log {serial_str} - {side_name}"
