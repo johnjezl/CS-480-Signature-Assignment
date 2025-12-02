@@ -1,4 +1,10 @@
 from Cube import Cube
+import os
+import pickle
+
+PDB_DIR = "pdb_cache"
+os.makedirs(PDB_DIR, exist_ok=True)
+
 # Create heuristic tables for corner orientations
 # encode: [ori0, ori1, ..., ori6] -> int in [0, 3**7)
 def encode_corner_ori(corners):
@@ -43,7 +49,15 @@ def build_corner_ori_pdb():
                 q.append(nxt)
 
     return pdb
-corner_ori_pdb = build_corner_ori_pdb()
+corner_ori_pdb = 0
+
+if os.path.exists(os.path.join(PDB_DIR, "corner_ori.pkl")):
+    with open(os.path.join(PDB_DIR, "corner_ori.pkl"), "rb") as f:
+        corner_ori_pdb = pickle.load(f)
+else:
+    corner_ori_pdb = build_corner_ori_pdb()
+    with open(os.path.join(PDB_DIR, "corner_ori.pkl"), "wb") as f:
+        pickle.dump(corner_ori_pdb, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 def h_corner_ori(cube):
     code = encode_corner_ori(cube.corners)
@@ -105,7 +119,17 @@ def build_edge_ori_pdb():
 
     return pdb
 
-edge_ori_pdb = build_edge_ori_pdb()
+edge_ori_pdb = 0
+
+if os.path.exists(os.path.join(PDB_DIR, "edge_ori.pkl")):
+    with open(os.path.join(PDB_DIR, "edge_ori.pkl"), "rb") as f:
+        edge_ori_pdb = pickle.load(f)
+else:
+    edge_ori_pdb = build_edge_ori_pdb()
+    with open(os.path.join(PDB_DIR, "edge_ori.pkl"), "wb") as f:
+        pickle.dump(edge_ori_pdb, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 
 def h_edge_ori(cube):
     code = encode_edge_ori(cube.edges)
@@ -201,7 +225,15 @@ def build_phase1_eo_udslice_table():
 
     return table
 
-table = build_phase1_eo_udslice_table()
+table = 0
+
+if os.path.exists(os.path.join(PDB_DIR, "udslice.pkl")):
+    with open(os.path.join(PDB_DIR, "udslice.pkl"), "rb") as f:
+        table = pickle.load(f)
+else:
+    table = build_phase1_eo_udslice_table()
+    with open(os.path.join(PDB_DIR, "udslice.pkl"), "wb") as f:
+        pickle.dump(table, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 def h_phase1_eo_udslice(cube):
     idx = encode_phase1_coord(cube.edges)
