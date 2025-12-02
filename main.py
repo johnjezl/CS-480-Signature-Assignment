@@ -1,12 +1,17 @@
 """
 Rubik's Cube Face Scanner - Main Application
 
-Menu-driven application with two modes:
-1. Single Face Mode: Scan one image and classify colors
-2. Full Cube Mode: Scan all 6 faces and solve the cube
+Menu-driven application with multiple modes:
+1. Single Face Mode: Scan one image file and classify colors
+2. Full Cube Mode: Scan all 6 faces from files and solve the cube
+3. Camera Single Face: Capture one face from camera and classify (Jetson only)
+4. Camera Full Cube: Capture all 6 faces from camera and solve (Jetson only)
 
 Usage:
-    python main.py
+    python main.py [--display]
+
+Options:
+    --display    Show captured images on display (for Jetson with monitor)
 """
 
 import cv2
@@ -14,10 +19,28 @@ import numpy as np
 import os
 import json
 import time
+import argparse
 
 from facelet_segmenter import FaceletSegmenter
 from FaceletColorClassifier import FaceletColorClassifier
 from IDASolver import IDASolver
+
+# Try to import Jetson camera module
+try:
+    from JetsonCamera import JetsonCamera, is_jetson, display_image, display_images_grid
+    JETSON_AVAILABLE = is_jetson()
+except ImportError:
+    JETSON_AVAILABLE = False
+    JetsonCamera = None
+
+    def is_jetson():
+        return False
+
+    def display_image(image, window_name="Image", wait_key=True):
+        pass
+
+    def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
+        pass
 
 
 # Color abbreviation map
@@ -153,7 +176,7 @@ def save_facelets(facelets, output_dir="output_facelets", face_name=None):
 
 def process_single_face(image_path, segmenter, classifier, face_name=None):
     """
-    Process a single face image: segment and classify.
+    Process a single face image from file: segment and classify.
 
     Args:
         image_path: Path to the image file
@@ -170,6 +193,24 @@ def process_single_face(image_path, segmenter, classifier, face_name=None):
     if image is None:
         print(f"Error: Could not load image: {image_path}")
         return None
+    print(f"Image size: {image.shape[1]}x{image.shape[0]}")
+
+    return process_image(image, segmenter, classifier, face_name)
+
+
+def process_image(image, segmenter, classifier, face_name=None):
+    """
+    Process an image (BGR numpy array): segment and classify.
+
+    Args:
+        image: BGR numpy array (height, width, 3)
+        segmenter: FaceletSegmenter instance
+        classifier: FaceletColorClassifier instance
+        face_name: Optional face name for saving facelets
+
+    Returns:
+        classifications or None on error
+    """
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
 
     # Segment the image into facelets
@@ -434,19 +475,311 @@ def full_cube_mode():
         print(f"\nError running solver: {e}")
 
 
+def camera_single_face_mode(display=False):
+    """
+    Mode 3: Capture a single face from camera and classify.
+
+    Args:
+        display: If True, show captured images on display
+    """
+    if not JETSON_AVAILABLE:
+        print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
+        return
+
+    print("\n" + "=" * 50)
+    print("  CAMERA SINGLE FACE MODE")
+    print("=" * 50)
+
+    # Initialize components with timing
+    print("\nInitializing FaceletSegmenter...")
+    start_time = time.time()
+    segmenter = FaceletSegmenter()
+    segmenter_time = time.time() - start_time
+    print(f"FaceletSegmenter ready (took {segmenter_time:.3f}s)")
+
+    print("\nInitializing FaceletColorClassifier...")
+    start_time = time.time()
+    classifier = FaceletColorClassifier()
+    classifier_time = time.time() - start_time
+    print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
+
+    print("\nInitializing JetsonCamera...")
+    start_time = time.time()
+    camera = JetsonCamera()
+    if not camera.open():
+        print("Error: Failed to open camera.")
+        return
+    camera_time = time.time() - start_time
+    print(f"JetsonCamera ready (took {camera_time:.3f}s)")
+
+    try:
+        # Instructions
+        print("\n" + "-" * 50)
+        print("Hold the Rubik's Cube face in front of the camera.")
+        print("Make sure the face fills most of the frame.")
+        print("Press Enter when ready, or 'q' to cancel...")
+        print("-" * 50)
+
+        user_input = input("> ").strip().lower()
+        if user_input == 'q':
+            print("Cancelled.")
+            return
+
+        # Capture with countdown
+        print("\nCapturing...")
+        image = camera.capture_with_countdown(countdown_seconds=3, display=display)
+
+        if image is None:
+            print("Error: Failed to capture image.")
+            return
+
+        # Save the captured image
+        capture_path = os.path.join("output_facelets", "camera_capture.jpg")
+        os.makedirs("output_facelets", exist_ok=True)
+        cv2.imwrite(capture_path, image)
+        print(f"Saved captured image to {capture_path}")
+
+        # Display if requested
+        if display:
+            display_image(image, "Captured Face", wait_key=False)
+
+        # Process the image
+        print("\nProcessing captured image...")
+        classifications = process_image(image, segmenter, classifier, face_name="camera")
+
+        if classifications is None:
+            return
+
+        # Output results
+        face_string, _ = print_classification_results(classifications)
+        print(f"\nScan complete! Face string: {face_string}")
+
+        # Close display window if it was opened
+        if display:
+            print("\nPress any key to close the image display...")
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
+    finally:
+        camera.close()
+
+
+def camera_full_cube_mode(display=False):
+    """
+    Mode 4: Capture all 6 faces from camera and solve the cube.
+
+    Args:
+        display: If True, show captured images on display
+    """
+    if not JETSON_AVAILABLE:
+        print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
+        return
+
+    print("\n" + "=" * 50)
+    print("  CAMERA FULL CUBE SOLVER MODE")
+    print("=" * 50)
+    print("\nYou will capture all 6 faces of the cube using the camera.")
+    print("Follow the on-screen instructions for each face.")
+
+    # Initialize components with timing
+    print("\nInitializing FaceletSegmenter...")
+    start_time = time.time()
+    segmenter = FaceletSegmenter()
+    segmenter_time = time.time() - start_time
+    print(f"FaceletSegmenter ready (took {segmenter_time:.3f}s)")
+
+    print("\nInitializing FaceletColorClassifier...")
+    start_time = time.time()
+    classifier = FaceletColorClassifier()
+    classifier_time = time.time() - start_time
+    print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
+
+    print("\nInitializing JetsonCamera...")
+    start_time = time.time()
+    camera = JetsonCamera()
+    if not camera.open():
+        print("Error: Failed to open camera.")
+        return
+    camera_time = time.time() - start_time
+    print(f"JetsonCamera ready (took {camera_time:.3f}s)")
+
+    # Face orientation instructions
+    FACE_INSTRUCTIONS = {
+        'up': "Hold the cube with the YELLOW center facing the camera.\n"
+              "         The GREEN face should be at the top.",
+        'down': "Hold the cube with the WHITE center facing the camera.\n"
+                "         The BLUE face should be at the top.",
+        'front': "Hold the cube with the BLUE center facing the camera.\n"
+                 "         The YELLOW face should be at the top.",
+        'back': "Hold the cube with the GREEN center facing the camera.\n"
+                "         The YELLOW face should be at the top.",
+        'left': "Hold the cube with the ORANGE center facing the camera.\n"
+                "         The YELLOW face should be at the top.",
+        'right': "Hold the cube with the RED center facing the camera.\n"
+                 "         The YELLOW face should be at the top."
+    }
+
+    # Dictionary to store face data and images
+    cube_data = {}
+    captured_images = []
+
+    try:
+        # Process each face
+        for i, (face_key, face_display) in enumerate(zip(FACE_NAMES, FACE_DISPLAY_NAMES)):
+            print(f"\n{'#' * 50}")
+            print(f"  FACE {i+1}/6: {face_display}")
+            print("#" * 50)
+
+            # Show orientation instructions
+            print(f"\nOrientation: {FACE_INSTRUCTIONS[face_key]}")
+            print("\nPress Enter when ready, or 'q' to cancel...")
+
+            user_input = input("> ").strip().lower()
+            if user_input == 'q':
+                print("\nCancelled. Aborting cube solve.")
+                return
+
+            # Capture with countdown
+            print("\nCapturing...")
+            image = camera.capture_with_countdown(countdown_seconds=3, display=display)
+
+            if image is None:
+                print("Error: Failed to capture image. Aborting.")
+                return
+
+            # Save the captured image
+            capture_path = os.path.join("output_facelets", f"camera_{face_key}.jpg")
+            os.makedirs("output_facelets", exist_ok=True)
+            cv2.imwrite(capture_path, image)
+            print(f"Saved captured image to {capture_path}")
+
+            # Store for later display
+            captured_images.append(image.copy())
+
+            # Process the image
+            print("\nProcessing captured image...")
+            classifications = process_image(image, segmenter, classifier, face_name=f"camera_{face_key}")
+
+            if classifications is None:
+                print("\nError processing face. Aborting cube solve.")
+                return
+
+            # Get results
+            face_string, face_array = print_classification_results(classifications, face_display)
+
+            # Store for solver
+            cube_data[face_key] = face_array
+
+            print(f"\n{face_display} face captured successfully!")
+
+            # Show progress
+            remaining = 6 - (i + 1)
+            if remaining > 0:
+                print(f"\n{remaining} face(s) remaining...")
+
+    finally:
+        camera.close()
+
+    # All faces captured - display all images if requested
+    if display and captured_images:
+        print("\nDisplaying all captured faces...")
+        display_images_grid(captured_images, labels=FACE_DISPLAY_NAMES,
+                            window_name="All Cube Faces", cols=3)
+
+    # Prepare solver input
+    print("\n" + "=" * 50)
+    print("  ALL FACES CAPTURED")
+    print("=" * 50)
+
+    # Display summary
+    print("\nCube Configuration:")
+    for face_key, face_display in zip(FACE_NAMES, FACE_DISPLAY_NAMES):
+        face_str = ''.join(cube_data[face_key])
+        print(f"  {face_display:20s}: {face_str}")
+
+    # Write JSON file for solver
+    solver_input = {"cube": cube_data}
+    json_path = "AStar_in.json"
+    print(f"\nWriting solver input to {json_path}...")
+    with open(json_path, 'w') as f:
+        json.dump(solver_input, f, indent=2)
+    print("Done!")
+
+    # Call the solver
+    print("\n" + "=" * 50)
+    print("  SOLVING CUBE")
+    print("=" * 50)
+
+    print("\nInitializing IDASolver...")
+    start_time = time.time()
+    solver = IDASolver()
+    solver_init_time = time.time() - start_time
+    print(f"IDASolver ready (took {solver_init_time:.3f}s)")
+
+    print("\nRunning solver...")
+    start_time = time.time()
+    try:
+        solver.RubikAStar()
+        solve_time = time.time() - start_time
+
+        # Read and display solution
+        solution_path = "AStar_out.txt"
+        if os.path.exists(solution_path):
+            with open(solution_path, 'r') as f:
+                solution = f.read().strip()
+
+            print("\n" + "=" * 50)
+            print("  SOLUTION FOUND!")
+            print("=" * 50)
+            print(f"\nMoves: {solution}")
+
+            # Count moves
+            moves = solution.split()
+            print(f"Total moves: {len(moves)}")
+            print(f"Solve time: {solve_time:.3f}s")
+        else:
+            print("\nError: Solution file not found.")
+
+    except Exception as e:
+        print(f"\nError running solver: {e}")
+
+
 def main():
     """Main entry point for the application."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Rubik's Cube Scanner & Solver",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        '--display',
+        action='store_true',
+        help='Show captured images on display (for Jetson with monitor)'
+    )
+    args = parser.parse_args()
+
     print("=" * 50)
     print("  RUBIK'S CUBE SCANNER & SOLVER")
     print("  Segmentation + Color Classification + IDA* Solver")
     print("=" * 50)
 
+    # Show Jetson status
+    if JETSON_AVAILABLE:
+        print("\n[Jetson detected - Camera modes available]")
+        if args.display:
+            print("[Display mode enabled - Images will be shown on monitor]")
+    else:
+        print("\n[Running on non-Jetson platform - File modes only]")
+
     # Menu-driven loop
     while True:
         print("\n" + "-" * 50)
         print("Select Mode:")
-        print("  1. Single Face - Scan one image and classify colors")
-        print("  2. Full Cube   - Scan all 6 faces and solve the cube")
+        print("  1. Single Face (File)  - Load image and classify colors")
+        print("  2. Full Cube (File)    - Load 6 images and solve cube")
+        if JETSON_AVAILABLE:
+            print("  3. Single Face (Camera) - Capture and classify one face")
+            print("  4. Full Cube (Camera)   - Capture 6 faces and solve")
         print("  q. Quit")
         print("-" * 50)
 
@@ -456,11 +789,16 @@ def main():
             single_face_mode()
         elif choice == '2':
             full_cube_mode()
+        elif choice == '3' and JETSON_AVAILABLE:
+            camera_single_face_mode(display=args.display)
+        elif choice == '4' and JETSON_AVAILABLE:
+            camera_full_cube_mode(display=args.display)
         elif choice == 'q':
             print("\nGoodbye!")
             break
         else:
-            print("Invalid choice. Please enter 1, 2, or q.")
+            valid_choices = "1, 2, 3, 4, or q" if JETSON_AVAILABLE else "1, 2, or q"
+            print(f"Invalid choice. Please enter {valid_choices}.")
 
 
 if __name__ == "__main__":
