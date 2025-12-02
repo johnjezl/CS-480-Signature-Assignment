@@ -196,16 +196,22 @@ class JetsonCamera:
 
         print(f"Get ready! Capturing in {countdown_seconds} seconds...")
 
+        # Console countdown - print each second
+        last_printed = countdown_seconds + 1
+
         start_time = time.time()
         captured_frame = None
 
         while True:
             ret, frame = self.cap.read()
             if not ret or frame is None:
+                # Brief sleep to avoid tight loop if camera has issues
+                time.sleep(0.01)
                 continue
 
             elapsed = time.time() - start_time
             remaining = countdown_seconds - elapsed
+            current_count = int(remaining) + 1
 
             if remaining <= 0:
                 # Capture!
@@ -221,10 +227,15 @@ class JetsonCamera:
                 print("Captured!")
                 break
 
+            # Print countdown to console (once per second)
+            if current_count < last_printed:
+                print(f"  {current_count}...")
+                last_printed = current_count
+
             if display:
                 # Show countdown on frame
                 display_frame = frame.copy()
-                countdown_text = str(int(remaining) + 1)
+                countdown_text = str(current_count)
 
                 # Get text size for centering
                 font = cv2.FONT_HERSHEY_SIMPLEX
@@ -246,12 +257,6 @@ class JetsonCamera:
                     cv2.destroyWindow(window_name)
                     print("Capture cancelled by user")
                     return None
-            else:
-                # Console countdown
-                current_count = int(remaining) + 1
-                if elapsed < 0.1 or (remaining % 1) > 0.9:
-                    print(f"  {current_count}...")
-                time.sleep(0.1)
 
         return captured_frame
 
