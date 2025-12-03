@@ -30,7 +30,7 @@ from facelet_segmenter_v2 import FaceletSegmenterV2
 from facelet_segmenter_v3 import FaceletSegmenterV3
 from facelet_segmenter_v4 import FaceletSegmenterV4
 from FaceletColorClassifier import FaceletColorClassifier
-from IDASolver import IDASolver
+from IDASolver import IDASolver, KociembaSolver
 
 # Try to import Jetson camera module
 try:
@@ -582,11 +582,11 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
     print("  SOLVING CUBE")
     print("=" * 50)
 
-    print("\nInitializing IDASolver...")
+    print("\nInitializing Kociemba solver...")
     start_time = time.time()
-    solver = IDASolver()
+    solver = KociembaSolver()
     solver_init_time = time.time() - start_time
-    print(f"IDASolver ready (took {solver_init_time:.3f}s)")
+    print(f"Solver ready (took {solver_init_time:.3f}s)")
 
     print("\nRunning solver...")
     start_time = time.time()
@@ -887,11 +887,11 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
     print("  SOLVING CUBE")
     print("=" * 50)
 
-    print("\nInitializing IDASolver...")
+    print("\nInitializing Kociemba solver...")
     start_time = time.time()
-    solver = IDASolver()
+    solver = KociembaSolver()
     solver_init_time = time.time() - start_time
-    print(f"IDASolver ready (took {solver_init_time:.3f}s)")
+    print(f"Solver ready (took {solver_init_time:.3f}s)")
 
     print("\nRunning solver...")
     start_time = time.time()
