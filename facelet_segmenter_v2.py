@@ -137,9 +137,10 @@ class FaceletSegmenterV2:
         if self.debug:
             print(f"[V2] Processing image: {width}x{height}")
 
-        # Calculate minimum cube size - cube should be at least 30% of image
-        # A typical photo has the cube taking up 40-70% of the frame
-        min_cube_size = int(min(width, height) * 0.30)
+        # Calculate minimum cube size - cube should be at least 20% of image
+        # This allows for cubes that are smaller in frame while still
+        # rejecting individual facelets (which are ~7% of image)
+        min_cube_size = int(min(width, height) * 0.20)
 
         # Strategy 1: Try contour-based quadrilateral detection with grid validation
         quad = self._detect_quadrilateral(image, min_size=min_cube_size)
@@ -325,38 +326,55 @@ class FaceletSegmenterV2:
     def _check_even_spacing(self, peaks: List[int], dimension: int) -> bool:
         """
         Check if peaks divide the dimension into roughly equal thirds.
+
+        Handles cases where the extracted region has extra margin (e.g., black
+        space around the cube) by looking for any two peaks that are roughly
+        1/3 of the dimension apart.
         """
         if len(peaks) < 2:
             return False
 
-        # Take the 2 peaks closest to 1/3 and 2/3 positions
-        target1 = dimension / 3
-        target2 = 2 * dimension / 3
-
         peaks = sorted(peaks)
 
-        # Find best match for first third line
+        # Strategy 1: Check if peaks match expected 1/3 and 2/3 positions
+        target1 = dimension / 3
+        target2 = 2 * dimension / 3
+        tolerance = dimension * 0.20
+
         best1 = min(peaks, key=lambda p: abs(p - target1))
-        # Find best match for second third line
         best2 = min(peaks, key=lambda p: abs(p - target2))
 
-        if best1 == best2:
-            return False
+        if best1 != best2:
+            spacing = best2 - best1
+            expected_spacing = dimension / 3
+            if (abs(best1 - target1) <= tolerance and
+                abs(best2 - target2) <= tolerance and
+                abs(spacing - expected_spacing) <= tolerance):
+                return True
 
-        # Check they're reasonably close to expected positions (within 20%)
-        tolerance = dimension * 0.20
-        if abs(best1 - target1) > tolerance:
-            return False
-        if abs(best2 - target2) > tolerance:
-            return False
-
-        # Check spacing between them is reasonable
-        spacing = best2 - best1
+        # Strategy 2: If we have 2+ peaks, check if ANY consecutive pair
+        # has spacing close to 1/3 of the dimension (grid line spacing)
+        # This handles cases where the region has extra margin
         expected_spacing = dimension / 3
-        if abs(spacing - expected_spacing) > tolerance:
-            return False
+        spacing_tolerance = dimension * 0.15  # Tighter tolerance for spacing
 
-        return True
+        for i in range(len(peaks) - 1):
+            spacing = peaks[i + 1] - peaks[i]
+            if abs(spacing - expected_spacing) <= spacing_tolerance:
+                # Found one valid spacing, check if there's another
+                for j in range(i + 1, len(peaks) - 1):
+                    spacing2 = peaks[j + 1] - peaks[j]
+                    if abs(spacing2 - expected_spacing) <= spacing_tolerance:
+                        # Two consecutive spacings match expected grid spacing
+                        return True
+
+        # Strategy 3: Check if we have exactly 2 peaks with correct spacing
+        if len(peaks) == 2:
+            spacing = peaks[1] - peaks[0]
+            if abs(spacing - expected_spacing) <= tolerance:
+                return True
+
+        return False
 
     def _detect_quadrilateral(self, image: np.ndarray, min_size: int = 0) -> Optional[Quadrilateral]:
         """
@@ -485,23 +503,45 @@ class FaceletSegmenterV2:
         lightness = lab[:, :, 0]
         _, dark_mask = cv2.threshold(lightness, 40, 255, cv2.THRESH_BINARY_INV)
 
-        # Combine: we want regions that are either colorful OR bounded by dark plastic
-        # Morphological operations to clean up
+        # Morphological operations to clean up the saturation mask
         kernel = np.ones((5, 5), np.uint8)
         sat_mask_clean = cv2.morphologyEx(sat_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
         sat_mask_clean = cv2.morphologyEx(sat_mask_clean, cv2.MORPH_OPEN, kernel, iterations=1)
 
-        # Fill holes inside the colored region
-        # Use flood fill from corners (assuming background is at corners)
-        filled = sat_mask_clean.copy()
-        h, w = filled.shape
-        flood_mask = np.zeros((h + 2, w + 2), np.uint8)
-        cv2.floodFill(filled, flood_mask, (0, 0), 255)
-        cv2.floodFill(filled, flood_mask, (w-1, 0), 255)
-        cv2.floodFill(filled, flood_mask, (0, h-1), 255)
-        cv2.floodFill(filled, flood_mask, (w-1, h-1), 255)
-        filled_inv = cv2.bitwise_not(filled)
-        combined_mask = cv2.bitwise_or(sat_mask_clean, filled_inv)
+        # Try to fill holes inside the colored region, but be careful with dark backgrounds
+        # First check if corners are dark (black background)
+        # Sample multiple points near each corner for robustness
+        margin = min(20, height // 50, width // 50)
+        corner_samples = []
+        for cy, cx in [(0, 0), (0, width-1), (height-1, 0), (height-1, width-1)]:
+            y1, y2 = max(0, cy-margin), min(height, cy+margin+1)
+            x1, x2 = max(0, cx-margin), min(width, cx+margin+1)
+            corner_samples.append(np.mean(lightness[y1:y2, x1:x2]))
+
+        is_dark_background = np.mean(corner_samples) < 80
+
+        if is_dark_background:
+            # For dark backgrounds, combine saturation (colored facelets) with
+            # brightness (white facelets) to get complete cube coverage
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            # White facelets are bright (>180) on dark background
+            _, bright_mask = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+            # Combine colored and white regions
+            color_and_white = cv2.bitwise_or(sat_mask_clean, bright_mask)
+            # Morphological closing to connect nearby regions
+            large_kernel = np.ones((15, 15), np.uint8)
+            combined_mask = cv2.morphologyEx(color_and_white, cv2.MORPH_CLOSE, large_kernel, iterations=2)
+        else:
+            # For lighter or mixed backgrounds, use flood fill to find enclosed regions
+            filled = sat_mask_clean.copy()
+            h, w = filled.shape
+            flood_mask = np.zeros((h + 2, w + 2), np.uint8)
+            cv2.floodFill(filled, flood_mask, (0, 0), 255)
+            cv2.floodFill(filled, flood_mask, (w-1, 0), 255)
+            cv2.floodFill(filled, flood_mask, (0, h-1), 255)
+            cv2.floodFill(filled, flood_mask, (w-1, h-1), 255)
+            filled_inv = cv2.bitwise_not(filled)
+            combined_mask = cv2.bitwise_or(sat_mask_clean, filled_inv)
 
         # Find contours in the combined mask
         contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -522,27 +562,47 @@ class FaceletSegmenterV2:
             if area < min_area or area > max_area:
                 continue
 
-            # Get convex hull and approximate
-            hull = cv2.convexHull(contour)
-            peri = cv2.arcLength(hull, True)
+            # Get the bounding rectangle (axis-aligned)
+            x, y, w, h = cv2.boundingRect(contour)
 
-            # Try to approximate to quadrilateral
-            for eps in [0.02, 0.03, 0.04, 0.05]:
-                approx = cv2.approxPolyDP(hull, eps * peri, True)
-                if len(approx) == 4:
-                    break
+            # Check if the contour has irregular shape (potential partial view of other faces)
+            # Compare contour area to bounding rect area - if significantly less,
+            # there may be "tails" extending from the main cube face
+            rect_area = w * h
+            fill_ratio = area / rect_area if rect_area > 0 else 0
 
-            if len(approx) != 4:
-                # Use bounding rectangle as fallback
-                rect = cv2.minAreaRect(contour)
-                box = cv2.boxPoints(rect)
-                approx = box.reshape(4, 1, 2).astype(np.int32)
+            # For a clean cube face, fill ratio should be high (>0.85)
+            # For a cube with partial other faces visible, it will be lower
+            has_irregular_shape = fill_ratio < 0.80
 
-            points = self._order_quadrilateral_points(approx.reshape(4, 2))
+            if has_irregular_shape:
+                # Use the largest inscribed square within the contour
+                # This ignores "tails" from partial views of adjacent faces
+                points = self._find_largest_square_in_contour(contour, image.shape[:2])
+                if points is None:
+                    continue
+            else:
+                # Get convex hull and approximate
+                hull = cv2.convexHull(contour)
+                peri = cv2.arcLength(hull, True)
 
-            # If the region is not square, expand it to be square
-            # This handles cases where white facelets are cut off
-            points = self._expand_to_square(points, width, height)
+                # Try to approximate to quadrilateral
+                for eps in [0.02, 0.03, 0.04, 0.05]:
+                    approx = cv2.approxPolyDP(hull, eps * peri, True)
+                    if len(approx) == 4:
+                        break
+
+                if len(approx) != 4:
+                    # Use bounding rectangle as fallback
+                    rect = cv2.minAreaRect(contour)
+                    box = cv2.boxPoints(rect)
+                    approx = box.reshape(4, 1, 2).astype(np.int32)
+
+                points = self._order_quadrilateral_points(approx.reshape(4, 2))
+
+                # If the region is not square, expand it to be square
+                # This handles cases where white facelets are cut off
+                points = self._expand_to_square(points, width, height)
 
             squareness = self._calculate_squareness(points)
 
@@ -555,14 +615,92 @@ class FaceletSegmenterV2:
             region_sat = saturation[mask > 0]
             avg_sat = np.mean(region_sat) if len(region_sat) > 0 else 0
 
+            # Calculate effective area of this quad
+            quad_area = cv2.contourArea(points.astype(np.int32))
+
             # Score based on area, squareness, and color saturation
-            score = (area / max_area) * (squareness ** 2) * (avg_sat / 255.0 + 0.5)
+            score = (quad_area / max_area) * (squareness ** 2) * (avg_sat / 255.0 + 0.5)
 
             if score > best_score:
                 best_score = score
                 best_quad = Quadrilateral(points)
 
         return best_quad
+
+    def _find_largest_square_in_contour(self, contour: np.ndarray, img_shape: Tuple[int, int]) -> Optional[np.ndarray]:
+        """
+        Find the largest square region that fits inside a contour.
+
+        This is useful when the contour includes extra "tails" from partial
+        views of adjacent cube faces.
+
+        Args:
+            contour: The contour to search within
+            img_shape: Image shape (height, width)
+
+        Returns:
+            Quadrilateral points (TL, TR, BR, BL) or None if not found
+        """
+        # Get bounding rectangle of contour
+        x, y, w, h = cv2.boundingRect(contour)
+
+        # Create a mask for this contour
+        mask = np.zeros(img_shape, dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+
+        # Find the center of mass of the contour - the cube face is likely centered here
+        M = cv2.moments(contour)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+        else:
+            cx, cy = x + w // 2, y + h // 2
+
+        # The cube face should be roughly square
+        # Use a smarter approach: find the largest square centered near the center of mass
+        max_size = min(w, h)
+        min_valid_size = int(max_size * 0.6)
+
+        best_square = None
+        best_score = 0
+
+        # Coarse search first with large steps
+        step_size = max(20, max_size // 20)
+        size_step = max(20, max_size // 10)
+
+        for size in range(max_size, min_valid_size, -size_step):
+            half = size // 2
+
+            # Search in a region around the center of mass
+            search_range = max(50, size // 4)
+            for dy in range(-search_range, search_range + 1, step_size):
+                for dx in range(-search_range, search_range + 1, step_size):
+                    test_x = cx - half + dx
+                    test_y = cy - half + dy
+
+                    # Bounds check
+                    if test_x < 0 or test_y < 0:
+                        continue
+                    if test_x + size > img_shape[1] or test_y + size > img_shape[0]:
+                        continue
+
+                    # Check coverage using ROI instead of full mask operation
+                    roi = mask[test_y:test_y+size, test_x:test_x+size]
+                    coverage = np.mean(roi) / 255.0
+
+                    # Score: prefer larger squares with good coverage
+                    if coverage > 0.85:
+                        score = (size / max_size) * coverage
+                        if score > best_score:
+                            best_score = score
+                            best_square = np.array([
+                                [test_x, test_y],
+                                [test_x + size, test_y],
+                                [test_x + size, test_y + size],
+                                [test_x, test_y + size]
+                            ], dtype=np.float32)
+
+        return best_square
 
     def _expand_to_square(self, points: np.ndarray, img_width: int, img_height: int) -> np.ndarray:
         """
@@ -850,6 +988,68 @@ class FaceletSegmenterV2:
 
         return region[start_y:start_y+min_dim, start_x:start_x+min_dim]
 
+    def _trim_black_margin(self, region: np.ndarray) -> np.ndarray:
+        """
+        Trim black margins around the cube in the extracted region.
+
+        Sometimes the perspective correction includes extra black space
+        around the actual cube face. This method finds and removes it.
+        """
+        if region is None or region.size == 0:
+            return region
+
+        height, width = region.shape[:2]
+
+        # Convert to grayscale and find non-black regions
+        gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+
+        # Use color saturation to find actual cube content (not just brightness)
+        # This distinguishes colored facelets from black background
+        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+        saturation = hsv[:, :, 1]
+
+        # Combine: either saturated (colored) OR bright (white facelets)
+        _, sat_mask = cv2.threshold(saturation, 40, 255, cv2.THRESH_BINARY)
+        _, bright_mask = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+        content_mask = cv2.bitwise_or(sat_mask, bright_mask)
+
+        # Find bounding box of non-black content
+        coords = cv2.findNonZero(content_mask)
+        if coords is None:
+            return region
+
+        x, y, w, h = cv2.boundingRect(coords)
+
+        # Only trim if the margin is significant (> 5% on any side)
+        margin_threshold = min(width, height) * 0.05
+        left_margin = x
+        top_margin = y
+        right_margin = width - (x + w)
+        bottom_margin = height - (y + h)
+
+        if (left_margin > margin_threshold or top_margin > margin_threshold or
+            right_margin > margin_threshold or bottom_margin > margin_threshold):
+
+            # Add small padding to not cut into the cube
+            pad = int(min(width, height) * 0.02)
+            x = max(0, x - pad)
+            y = max(0, y - pad)
+            w = min(width - x, w + 2 * pad)
+            h = min(height - y, h + 2 * pad)
+
+            # Make it square (take the larger dimension)
+            size = max(w, h)
+            cx, cy = x + w // 2, y + h // 2
+            x = max(0, cx - size // 2)
+            y = max(0, cy - size // 2)
+            x = min(x, width - size)
+            y = min(y, height - size)
+
+            if x >= 0 and y >= 0 and x + size <= width and y + size <= height:
+                return region[y:y+size, x:x+size]
+
+        return region
+
     def _extract_facelets_smart(self, face_region: np.ndarray) -> List[np.ndarray]:
         """
         Extract 9 facelets using smart boundary detection.
@@ -857,6 +1057,9 @@ class FaceletSegmenterV2:
         Uses color boundaries (black plastic between facelets) to find
         optimal extraction regions.
         """
+        # First, trim any black margin around the cube
+        face_region = self._trim_black_margin(face_region)
+
         height, width = face_region.shape[:2]
 
         # Convert to LAB for better color boundary detection

@@ -8,11 +8,14 @@ Menu-driven application with multiple modes:
 4. Camera Full Cube: Capture all 6 faces from camera and solve (Jetson only)
 
 Usage:
-    python main.py [--display] [--v2]
+    python main.py [--display] [--v2] [--v3] [--v4] [--rotate]
 
 Options:
     --display    Show captured images on display (for Jetson with monitor)
     --v2         Use v2 segmenter with improved detection algorithms
+    --v3         Use v3 segmenter with contour-based facelet detection
+    --v4         Use v4 segmenter with OpenCV square detection (Canny + contours)
+    --rotate     Rotate camera images 180 degrees (for inverted camera mounting)
 """
 
 import cv2
@@ -24,6 +27,8 @@ import argparse
 
 from facelet_segmenter import FaceletSegmenter
 from facelet_segmenter_v2 import FaceletSegmenterV2
+from facelet_segmenter_v3 import FaceletSegmenterV3
+from facelet_segmenter_v4 import FaceletSegmenterV4
 from FaceletColorClassifier import FaceletColorClassifier
 from IDASolver import IDASolver
 
@@ -256,10 +261,12 @@ def display_face_and_facelets(image, facelets, window_name="Face and Facelets"):
     gap_img = np.zeros((grid_size, gap, 3), dtype=np.uint8)
     combined = np.hstack([face_scaled, gap_img, facelet_grid])
 
-    # Display
+    # Display - destroy any existing window first to avoid showing stale content
+    cv2.destroyWindow(window_name)
+    cv2.waitKey(1)  # Process the destroy
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(window_name, combined)
-    cv2.waitKey(30)  # Process window events
+    cv2.waitKey(100)  # Give more time for window to update
 
 
 def process_single_face(image_path, segmenter, classifier, side_name=None, display=False):
@@ -330,17 +337,29 @@ def process_image(image, segmenter, classifier, side_name=None, display=False):
     return classifications
 
 
-def single_face_mode(use_v2: bool = False):
+def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False):
     """Mode 1: Process a single face image."""
     print("\n" + "=" * 50)
     print("  SINGLE FACE MODE")
     print("=" * 50)
 
     # Initialize components with timing
-    segmenter_name = "FaceletSegmenterV2" if use_v2 else "FaceletSegmenter"
+    if use_v4:
+        segmenter_name = "FaceletSegmenterV4"
+        segmenter_class = FaceletSegmenterV4
+    elif use_v3:
+        segmenter_name = "FaceletSegmenterV3"
+        segmenter_class = FaceletSegmenterV3
+    elif use_v2:
+        segmenter_name = "FaceletSegmenterV2"
+        segmenter_class = FaceletSegmenterV2
+    else:
+        segmenter_name = "FaceletSegmenter"
+        segmenter_class = FaceletSegmenter
+
     print(f"\nInitializing {segmenter_name}...")
     start_time = time.time()
-    segmenter = FaceletSegmenterV2() if use_v2 else FaceletSegmenter()
+    segmenter = segmenter_class()
     segmenter_time = time.time() - start_time
     print(f"{segmenter_name} ready (took {segmenter_time:.3f}s)")
 
@@ -443,7 +462,7 @@ def find_face_images(directory):
     return face_files
 
 
-def full_cube_mode(use_v2: bool = False):
+def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False):
     """Mode 2: Process all 6 faces and solve the cube."""
     print("\n" + "=" * 50)
     print("  FULL CUBE SOLVER MODE")
@@ -472,10 +491,22 @@ def full_cube_mode(use_v2: bool = False):
         print(f"  {face_key}: {os.path.basename(face_files[face_key])}")
 
     # Initialize components with timing
-    segmenter_name = "FaceletSegmenterV2" if use_v2 else "FaceletSegmenter"
+    if use_v4:
+        segmenter_name = "FaceletSegmenterV4"
+        segmenter_class = FaceletSegmenterV4
+    elif use_v3:
+        segmenter_name = "FaceletSegmenterV3"
+        segmenter_class = FaceletSegmenterV3
+    elif use_v2:
+        segmenter_name = "FaceletSegmenterV2"
+        segmenter_class = FaceletSegmenterV2
+    else:
+        segmenter_name = "FaceletSegmenter"
+        segmenter_class = FaceletSegmenter
+
     print(f"\nInitializing {segmenter_name}...")
     start_time = time.time()
-    segmenter = FaceletSegmenterV2() if use_v2 else FaceletSegmenter()
+    segmenter = segmenter_class()
     segmenter_time = time.time() - start_time
     print(f"{segmenter_name} ready (took {segmenter_time:.3f}s)")
 
@@ -518,12 +549,14 @@ def full_cube_mode(use_v2: bool = False):
             print("\nPress Enter to continue to solver (or 'q' to cancel)...")
         user_input = input("> ").strip().lower()
         cv2.destroyAllWindows()
+        cv2.waitKey(1)  # Process any pending window events after destroy
         if user_input == 'q':
             print("\nCancelled. Aborting cube solve.")
             return
 
     # Close any remaining display windows
     cv2.destroyAllWindows()
+    cv2.waitKey(1)  # Process any pending window events after destroy
 
     # All faces captured - prepare solver input
     print("\n" + "=" * 50)
@@ -583,13 +616,16 @@ def full_cube_mode(use_v2: bool = False):
         print(f"\nError running solver: {e}")
 
 
-def camera_single_face_mode(display=False, use_v2: bool = False):
+def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = False, use_v4: bool = False, rotate: bool = False):
     """
     Mode 3: Capture a single face from camera and classify.
 
     Args:
         display: If True, show captured images on display
         use_v2: If True, use v2 segmenter with improved detection
+        use_v3: If True, use v3 segmenter with contour-based detection
+        use_v4: If True, use v4 segmenter with OpenCV square detection
+        rotate: If True, rotate captured images 180 degrees
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -600,10 +636,22 @@ def camera_single_face_mode(display=False, use_v2: bool = False):
     print("=" * 50)
 
     # Initialize components with timing
-    segmenter_name = "FaceletSegmenterV2" if use_v2 else "FaceletSegmenter"
+    if use_v4:
+        segmenter_name = "FaceletSegmenterV4"
+        segmenter_class = FaceletSegmenterV4
+    elif use_v3:
+        segmenter_name = "FaceletSegmenterV3"
+        segmenter_class = FaceletSegmenterV3
+    elif use_v2:
+        segmenter_name = "FaceletSegmenterV2"
+        segmenter_class = FaceletSegmenterV2
+    else:
+        segmenter_name = "FaceletSegmenter"
+        segmenter_class = FaceletSegmenter
+
     print(f"\nInitializing {segmenter_name}...")
     start_time = time.time()
-    segmenter = FaceletSegmenterV2() if use_v2 else FaceletSegmenter()
+    segmenter = segmenter_class()
     segmenter_time = time.time() - start_time
     print(f"{segmenter_name} ready (took {segmenter_time:.3f}s)")
 
@@ -635,8 +683,8 @@ def camera_single_face_mode(display=False, use_v2: bool = False):
             print("Cancelled.")
             return
 
-        # Capture with live preview
-        image = camera.capture_with_preview(display=display)
+        # Capture with live preview (rotation applied in preview if enabled)
+        image = camera.capture_with_preview(display=display, rotate=rotate)
 
         if image is None:
             print("Error: Failed to capture image.")
@@ -663,18 +711,22 @@ def camera_single_face_mode(display=False, use_v2: bool = False):
         if display:
             input("\nPress Enter to close the image display...")
             cv2.destroyAllWindows()
+            cv2.waitKey(1)  # Process any pending window events after destroy
 
     finally:
         camera.close()
 
 
-def camera_full_cube_mode(display=False, use_v2: bool = False):
+def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = False, use_v4: bool = False, rotate: bool = False):
     """
     Mode 4: Capture all 6 faces from camera and solve the cube.
 
     Args:
         display: If True, show captured images on display
         use_v2: If True, use v2 segmenter with improved detection
+        use_v3: If True, use v3 segmenter with contour-based detection
+        use_v4: If True, use v4 segmenter with OpenCV square detection
+        rotate: If True, rotate captured images 180 degrees
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -687,10 +739,22 @@ def camera_full_cube_mode(display=False, use_v2: bool = False):
     print("Follow the on-screen instructions for each face.")
 
     # Initialize components with timing
-    segmenter_name = "FaceletSegmenterV2" if use_v2 else "FaceletSegmenter"
+    if use_v4:
+        segmenter_name = "FaceletSegmenterV4"
+        segmenter_class = FaceletSegmenterV4
+    elif use_v3:
+        segmenter_name = "FaceletSegmenterV3"
+        segmenter_class = FaceletSegmenterV3
+    elif use_v2:
+        segmenter_name = "FaceletSegmenterV2"
+        segmenter_class = FaceletSegmenterV2
+    else:
+        segmenter_name = "FaceletSegmenter"
+        segmenter_class = FaceletSegmenter
+
     print(f"\nInitializing {segmenter_name}...")
     start_time = time.time()
-    segmenter = FaceletSegmenterV2() if use_v2 else FaceletSegmenter()
+    segmenter = segmenter_class()
     segmenter_time = time.time() - start_time
     print(f"{segmenter_name} ready (took {segmenter_time:.3f}s)")
 
@@ -745,8 +809,8 @@ def camera_full_cube_mode(display=False, use_v2: bool = False):
                 print("\nCancelled. Aborting cube solve.")
                 return
 
-            # Capture with live preview
-            image = camera.capture_with_preview(display=display)
+            # Capture with live preview (rotation applied in preview if enabled)
+            image = camera.capture_with_preview(display=display, rotate=rotate)
 
             if image is None:
                 print("Error: Failed to capture image. Aborting.")
@@ -771,10 +835,24 @@ def camera_full_cube_mode(display=False, use_v2: bool = False):
 
             print(f"\n{face_display} face captured successfully!")
 
-            # Show progress
-            remaining = 6 - (i + 1)
-            if remaining > 0:
-                print(f"\n{remaining} face(s) remaining...")
+            # Pause to review the displayed image if display mode is on
+            if display:
+                remaining = 6 - (i + 1)
+                if remaining > 0:
+                    print(f"\n{remaining} face(s) remaining. Press Enter to continue (or 'q' to cancel)...")
+                else:
+                    print("\nPress Enter to continue to solver (or 'q' to cancel)...")
+                user_input = input("> ").strip().lower()
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)  # Process any pending window events
+                if user_input == 'q':
+                    print("\nCancelled. Aborting cube solve.")
+                    return
+            else:
+                # Show progress without pause
+                remaining = 6 - (i + 1)
+                if remaining > 0:
+                    print(f"\n{remaining} face(s) remaining...")
 
     finally:
         camera.close()
@@ -860,6 +938,21 @@ def main():
         action='store_true',
         help='Use v2 segmenter with improved detection (contour-based, perspective correction)'
     )
+    parser.add_argument(
+        '--v3',
+        action='store_true',
+        help='Use v3 segmenter with contour-based facelet detection'
+    )
+    parser.add_argument(
+        '--v4',
+        action='store_true',
+        help='Use v4 segmenter with OpenCV square detection (Canny + contours)'
+    )
+    parser.add_argument(
+        '--rotate',
+        action='store_true',
+        help='Rotate camera images 180 degrees (for inverted camera mounting)'
+    )
     args = parser.parse_args()
 
     print("=" * 50)
@@ -876,10 +969,17 @@ def main():
         print("\n[Running on non-Jetson platform - File modes only]")
 
     # Show segmenter version
-    if args.v2:
+    if args.v4:
+        print("[Using V4 segmenter - OpenCV square detection (Canny + contours)]")
+    elif args.v3:
+        print("[Using V3 segmenter - contour-based facelet detection]")
+    elif args.v2:
         print("[Using V2 segmenter - improved detection with perspective correction]")
     else:
         print("[Using V1 segmenter - standard detection]")
+
+    if args.rotate:
+        print("[Camera rotation enabled - images will be rotated 180 degrees]")
 
     # Menu-driven loop
     while True:
@@ -896,13 +996,13 @@ def main():
         choice = input("> ").strip().lower()
 
         if choice == '1':
-            single_face_mode(use_v2=args.v2)
+            single_face_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4)
         elif choice == '2':
-            full_cube_mode(use_v2=args.v2)
+            full_cube_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4)
         elif choice == '3' and JETSON_AVAILABLE:
-            camera_single_face_mode(display=args.display, use_v2=args.v2)
+            camera_single_face_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, rotate=args.rotate)
         elif choice == '4' and JETSON_AVAILABLE:
-            camera_full_cube_mode(display=args.display, use_v2=args.v2)
+            camera_full_cube_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, rotate=args.rotate)
         elif choice == 'q':
             print("\nGoodbye!")
             break
