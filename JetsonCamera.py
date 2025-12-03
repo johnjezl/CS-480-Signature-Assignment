@@ -197,12 +197,13 @@ class JetsonCamera:
 
         return frame
 
-    def capture_with_preview(self, display=False):
+    def capture_with_preview(self, display=False, rotate=False):
         """
         Capture an image with live preview, waiting for user to press Enter.
 
         Args:
             display: If True, show live camera preview while waiting
+            rotate: If True, rotate the preview and captured image 180 degrees
 
         Returns:
             numpy.ndarray: BGR image (height, width, 3) or None on error
@@ -235,6 +236,10 @@ class JetsonCamera:
                 if not ret or frame is None:
                     time.sleep(0.01)
                     continue
+
+                # Apply rotation if requested
+                if rotate:
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
 
                 # Show "Press Enter to capture" on frame
                 display_frame = frame.copy()
@@ -287,6 +292,10 @@ class JetsonCamera:
             if not ret or frame is None:
                 print("Error: Failed to capture frame")
                 return None
+
+            # Apply rotation if requested
+            if rotate:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
 
             print("Captured!")
             return frame.copy()
