@@ -3,10 +3,21 @@ Generate Synthetic Dataset for Rubik's Cube Color Classification
 
 This script generates 5,100 synthetic facelet images (850 per color)
 with mixed color palettes to support multiple cube brands.
+
+Usage:
+    python tools/generate_full_dataset.py
 """
 
-from tools.SyntheticFaceletGenerator import SyntheticFaceletGenerator
+import os
+import sys
 import time
+
+# Add parent directory to path so we can import from tools
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.insert(0, parent_dir)
+
+from tools.SyntheticFaceletGenerator import SyntheticFaceletGenerator
 
 def main():
     print("="*60)
@@ -28,7 +39,7 @@ def main():
 
     # Generate full dataset
     stats = generator.generate_dataset(
-        output_dir='training_dataset/synthetic',
+        output_dir='datasets/training_dataset/synthetic',
         samples_per_color=850,
         size=64
     )

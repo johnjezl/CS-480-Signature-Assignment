@@ -9,6 +9,9 @@ Features:
 - Model checkpointing
 - Early stopping
 - Evaluation metrics
+
+Usage:
+    python tools/train_color_classifier.py
 """
 
 import torch
@@ -19,12 +22,18 @@ from torchvision import transforms
 import numpy as np
 import cv2
 import os
+import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 import seaborn as sns
 from tqdm import tqdm
 import time
+
+# Add parent directory to path so we can import from project root
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.insert(0, parent_dir)
 
 from ColorClassifierCNN import ColorClassifierCNN
 
@@ -286,7 +295,7 @@ def plot_confusion_matrix(cm, class_names, save_path='confusion_matrix.png'):
     plt.close()
 
 
-def train_model(data_dir='training_dataset/synthetic',
+def train_model(data_dir='datasets/training_dataset/synthetic',
                 num_epochs=20,
                 batch_size=32,
                 learning_rate=0.001,
@@ -454,7 +463,7 @@ def train_model(data_dir='training_dataset/synthetic',
 if __name__ == "__main__":
     # Train the model
     model, train_losses, val_losses, train_accs, val_accs = train_model(
-        data_dir='training_dataset/synthetic',
+        data_dir='datasets/training_dataset/synthetic',
         num_epochs=20,
         batch_size=32,
         learning_rate=0.001,

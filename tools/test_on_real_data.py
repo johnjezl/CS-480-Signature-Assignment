@@ -3,6 +3,9 @@ Test trained ColorClassifierCNN on real facelet images
 
 This script evaluates how well the model trained on synthetic data
 generalizes to real-world Rubik's Cube facelet images.
+
+Usage:
+    python tools/test_on_real_data.py
 """
 
 import torch
@@ -11,7 +14,14 @@ from torchvision import transforms
 import numpy as np
 import cv2
 import os
+import sys
 from pathlib import Path
+
+# Add parent directory to path so we can import from project root
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.insert(0, parent_dir)
+
 from ColorClassifierCNN import ColorClassifierCNN
 
 
@@ -242,13 +252,13 @@ def visualize_predictions(data_dir='dataset/real_facelets', model_path='models/b
 if __name__ == "__main__":
     # Run test
     accuracy, results = test_on_real_data(
-        data_dir='dataset/real_facelets',
+        data_dir='datasets/real_facelets',
         model_path='models/best_model.pth'
     )
 
     # Create visualization
     visualize_predictions(
-        data_dir='dataset/real_facelets',
+        data_dir='datasets/real_facelets',
         model_path='models/best_model.pth',
         output_path='models/real_data_predictions.png'
     )

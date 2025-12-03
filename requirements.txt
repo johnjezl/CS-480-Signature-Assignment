@@ -1,0 +1,22 @@
+# Rubik's Cube Solver - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.20.0
+opencv-python>=4.5.0
+
+# PyTorch - Install separately based on platform (see install_dependencies.py)
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# Image processing
+Pillow>=9.0.0
+
+# Machine learning utilities (for training)
+scikit-learn>=1.0.0
+matplotlib>=3.5.0
+seaborn>=0.12.0
+tqdm>=4.60.0
+
+# Note: For Jetson Orin Nano, PyTorch is pre-installed with JetPack
+# and should not be installed via pip

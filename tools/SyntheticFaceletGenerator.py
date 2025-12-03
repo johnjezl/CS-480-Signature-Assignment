@@ -52,6 +52,14 @@ class SyntheticFaceletGenerator:
                 'orange': (52, 111, 237),
                 'blue': (159, 98, 0),
                 'green': (97, 229, 85)
+            },
+            'palette5': {
+                'white': (221, 217, 221),
+                'yellow': (33, 240, 239),
+                'red': (55, 59, 238),
+                'orange': (51, 142, 253),
+                'blue': (190, 54, 33),
+                'green': (83, 226, 94),
             }
         }
 
@@ -71,7 +79,7 @@ class SyntheticFaceletGenerator:
         """
         # If in mixed mode, randomly select a palette for this facelet
         if self.palette_mode == 'mixed':
-            palette = np.random.choice(['standard', 'palette1', 'palette2', 'palette3', 'palette4'])
+            palette = np.random.choice(['standard', 'palette1', 'palette2', 'palette3', 'palette4', 'palette5'])
             base_color = self.palettes[palette][color_name]
         else:
             base_color = self.colors[color_name]
