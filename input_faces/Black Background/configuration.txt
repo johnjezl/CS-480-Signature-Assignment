@@ -1,0 +1,8 @@
+Cube Configuration:
+  Up (Yellow)         : GOBGYBYYW
+  Down (White)        : GGGBWWGBR
+  Front (Blue)        : WYBBBWWGO
+  Back (Green)        : ROBRGROYO
+  Left (Orange)       : YOWROGOWY
+  Right (Red)         : ROOWRRYYB
+
