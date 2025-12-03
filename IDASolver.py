@@ -1,6 +1,8 @@
+import Facelet_to_Cube
 from Cube import Cube
 import os
 import pickle
+import json
 
 PDB_DIR = "pdb_cache"
 os.makedirs(PDB_DIR, exist_ok=True)
@@ -269,8 +271,7 @@ INVERSE_MOVE = {
 import math
 
 class IDASolver:
-    def __init__(self, start_cube):
-        self.start = start_cube
+    def __init__(self):
         self.MOVES = MOVES
         self.heuristic = heuristic
         self.path = []  # list of moves leading to current node
@@ -337,3 +338,19 @@ class IDASolver:
                 min_excess = t
 
         return min_excess
+
+    def RubikAStar(self):
+        formatted_obj = {}
+        with open('AStar_in.json', 'r') as file:
+            input_obj = json.load(file)
+        input_obj = input_obj["cube"]
+        for i in ("up", "down", "left", "right", "front", "back"):
+            face = input_obj[i]
+            formatted_obj[i] = face
+        cube = Facelet_to_Cube.facelet_to_cube(formatted_obj)
+        self.start = cube
+        solution = self.solve(max_depth=21)
+        solution = " ".join(solution)
+
+        with open('AStar_out.txt', 'w') as file:
+            file.write(solution)

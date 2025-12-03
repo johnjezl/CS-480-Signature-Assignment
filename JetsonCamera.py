@@ -12,6 +12,28 @@ import numpy as np
 import time
 import platform
 import os
+import sys
+import select
+
+
+def is_display_available():
+    """
+    Check if a display is available for GUI operations.
+
+    Returns:
+        bool: True if display is available, False otherwise
+    """
+    # Check if DISPLAY environment variable is set (X11)
+    display = os.environ.get('DISPLAY')
+    if display:
+        return True
+
+    # Check for Wayland
+    wayland = os.environ.get('WAYLAND_DISPLAY')
+    if wayland:
+        return True
+
+    return False
 
 
 def is_jetson():
@@ -175,13 +197,12 @@ class JetsonCamera:
 
         return frame
 
-    def capture_with_countdown(self, countdown_seconds=3, display=False):
+    def capture_with_preview(self, display=False):
         """
-        Capture an image with a countdown, optionally displaying preview.
+        Capture an image with live preview, waiting for user to press Enter.
 
         Args:
-            countdown_seconds: Seconds to count down before capture
-            display: If True, show camera preview during countdown
+            display: If True, show live camera preview while waiting
 
         Returns:
             numpy.ndarray: BGR image (height, width, 3) or None on error
@@ -190,75 +211,85 @@ class JetsonCamera:
             if not self.open():
                 return None
 
+        # Check if display is actually available
+        if display and not is_display_available():
+            print("Warning: --display requested but no display available (DISPLAY not set)")
+            print("Continuing without visual preview...")
+            display = False
+
+        window_name = "Camera Preview"
         if display:
-            window_name = "Camera Preview"
             cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
-        print(f"Get ready! Capturing in {countdown_seconds} seconds...")
-
-        # Console countdown - print each second
-        last_printed = countdown_seconds + 1
-
-        start_time = time.time()
         captured_frame = None
 
-        while True:
-            ret, frame = self.cap.read()
-            if not ret or frame is None:
-                # Brief sleep to avoid tight loop if camera has issues
-                time.sleep(0.01)
-                continue
+        if display:
+            # Display mode: show live preview, capture on Enter
+            import select
+            import sys
 
-            elapsed = time.time() - start_time
-            remaining = countdown_seconds - elapsed
-            current_count = int(remaining) + 1
+            print("Live preview active. Press Enter to capture (or 'q' + Enter to cancel)...")
 
-            if remaining <= 0:
-                # Capture!
-                captured_frame = frame.copy()
-                if display:
-                    # Show captured frame with "CAPTURED!" text
-                    display_frame = frame.copy()
-                    cv2.putText(display_frame, "CAPTURED!", (50, 100),
-                                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
-                    cv2.imshow(window_name, display_frame)
-                    cv2.waitKey(500)  # Show for 500ms
-                    cv2.destroyWindow(window_name)
-                print("Captured!")
-                break
+            while True:
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    time.sleep(0.01)
+                    continue
 
-            # Print countdown to console (once per second)
-            if current_count < last_printed:
-                print(f"  {current_count}...")
-                last_printed = current_count
-
-            if display:
-                # Show countdown on frame
+                # Show "Press Enter to capture" on frame
                 display_frame = frame.copy()
-                countdown_text = str(current_count)
-
-                # Get text size for centering
+                text = "Press Enter to capture"
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 4
-                thickness = 6
-                (text_width, text_height), _ = cv2.getTextSize(countdown_text, font, font_scale, thickness)
-
-                # Center the countdown number
+                font_scale = 1
+                thickness = 2
+                (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
                 x = (frame.shape[1] - text_width) // 2
-                y = (frame.shape[0] + text_height) // 2
+                y = frame.shape[0] - 30
 
-                # Draw countdown with outline for visibility
-                cv2.putText(display_frame, countdown_text, (x, y), font, font_scale, (0, 0, 0), thickness + 2)
-                cv2.putText(display_frame, countdown_text, (x, y), font, font_scale, (0, 255, 255), thickness)
+                cv2.putText(display_frame, text, (x, y), font, font_scale, (0, 0, 0), thickness + 2)
+                cv2.putText(display_frame, text, (x, y), font, font_scale, (0, 255, 255), thickness)
 
                 cv2.imshow(window_name, display_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    cv2.destroyWindow(window_name)
-                    print("Capture cancelled by user")
-                    return None
+                cv2.waitKey(30)  # ~30fps, also processes window events
 
-        return captured_frame
+                # Check for terminal input (non-blocking)
+                if select.select([sys.stdin], [], [], 0.0)[0]:
+                    user_input = sys.stdin.readline().strip().lower()
+                    if user_input == 'q':
+                        cv2.destroyWindow(window_name)
+                        print("Capture cancelled by user")
+                        return None
+                    else:
+                        # Capture current frame
+                        captured_frame = frame.copy()
+                        display_frame = frame.copy()
+                        cv2.putText(display_frame, "CAPTURED!", (50, 100),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
+                        cv2.imshow(window_name, display_frame)
+                        cv2.waitKey(500)
+                        cv2.destroyWindow(window_name)
+                        print("Captured!")
+                        return captured_frame
+        else:
+            # No display mode: just prompt and capture
+            print("Press Enter to capture (or 'q' to cancel)...")
+            user_input = input("> ").strip().lower()
+
+            if user_input == 'q':
+                print("Capture cancelled by user")
+                return None
+
+            # Flush buffer and capture
+            for _ in range(5):
+                self.cap.read()
+
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                print("Error: Failed to capture frame")
+                return None
+
+            print("Captured!")
+            return frame.copy()
 
     def __enter__(self):
         """Context manager entry."""
@@ -278,22 +309,31 @@ def display_image(image, window_name="Image", wait_key=True):
     Args:
         image: BGR numpy array
         window_name: Name for the display window
-        wait_key: If True, wait for key press before returning
+        wait_key: If True, wait for Enter press before returning
 
     Returns:
-        int: Key code pressed (if wait_key=True), -1 otherwise
+        int: 0 if Enter pressed (if wait_key=True), -1 otherwise
     """
     if image is None:
         print("Error: No image to display")
+        return -1
+
+    if not is_display_available():
+        print("Warning: Cannot display image - no display available (DISPLAY not set)")
         return -1
 
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(window_name, image)
 
     if wait_key:
-        key = cv2.waitKey(0) & 0xFF
+        print("Press Enter to close the display...")
+        while True:
+            cv2.waitKey(30)
+            if select.select([sys.stdin], [], [], 0.0)[0]:
+                sys.stdin.readline()
+                break
         cv2.destroyWindow(window_name)
-        return key
+        return 0
     return -1
 
 
@@ -309,6 +349,10 @@ def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
     """
     if not images:
         print("Error: No images to display")
+        return
+
+    if not is_display_available():
+        print("Warning: Cannot display images - no display available (DISPLAY not set)")
         return
 
     # Calculate grid dimensions
@@ -358,8 +402,16 @@ def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
 
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(window_name, canvas)
-    print("Press any key to close the display...")
-    cv2.waitKey(0)
+
+    print("Press Enter to close the display...")
+
+    # Keep updating display while waiting for terminal input
+    while True:
+        cv2.waitKey(30)
+        if select.select([sys.stdin], [], [], 0.0)[0]:
+            sys.stdin.readline()
+            break
+
     cv2.destroyWindow(window_name)
 
 
@@ -381,9 +433,9 @@ if __name__ == "__main__":
                 print(f"Captured frame: {frame.shape}")
                 display_image(frame, "Test Capture")
 
-            # Test countdown capture
-            print("\nTesting countdown capture...")
-            frame = camera.capture_with_countdown(countdown_seconds=3, display=True)
+            # Test preview capture
+            print("\nTesting preview capture...")
+            frame = camera.capture_with_preview(display=True)
             if frame is not None:
                 print(f"Captured frame: {frame.shape}")
 
