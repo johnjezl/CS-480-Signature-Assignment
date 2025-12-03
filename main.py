@@ -492,8 +492,8 @@ def full_cube_mode():
 
         image_path = face_files[face_key]
 
-        # Process the face
-        classifications = process_single_face(image_path, segmenter, classifier, side_name=face_key)
+        # Process the face with display enabled
+        classifications = process_single_face(image_path, segmenter, classifier, side_name=face_key, display=True)
         if classifications is None:
             print("\nError processing face. Aborting cube solve.")
             return
@@ -505,6 +505,21 @@ def full_cube_mode():
         cube_data[face_key] = face_array
 
         print(f"\n{face_display} face captured successfully!")
+
+        # Pause to review the displayed image
+        remaining = 6 - (i + 1)
+        if remaining > 0:
+            print(f"\n{remaining} face(s) remaining. Press Enter to continue (or 'q' to cancel)...")
+        else:
+            print("\nPress Enter to continue to solver (or 'q' to cancel)...")
+        user_input = input("> ").strip().lower()
+        cv2.destroyAllWindows()
+        if user_input == 'q':
+            print("\nCancelled. Aborting cube solve.")
+            return
+
+    # Close any remaining display windows
+    cv2.destroyAllWindows()
 
     # All faces captured - prepare solver input
     print("\n" + "=" * 50)
