@@ -7,13 +7,75 @@ camera module connected to the Jetson Orin Nano via MIPI CSI.
 Uses GStreamer pipeline through OpenCV for hardware-accelerated capture.
 """
 
+import os
+import sys
+
+# Suppress GStreamer and Argus debug output (GST_ARGUS, CONSUMER messages)
+# Must be set before importing cv2 which initializes GStreamer
+os.environ['GST_DEBUG'] = '0'
+os.environ['GST_DEBUG_NO_COLOR'] = '1'
+os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
+os.environ['ARGUS_LOG'] = 'WARN'
+
+# Aggressively redirect stdout and stderr at OS level to capture native library output
+# This catches output that bypasses Python's sys.stdout/sys.stderr
+LOG_DIR = "log"
+os.makedirs(LOG_DIR, exist_ok=True)
+_debug_log_path = os.path.join(LOG_DIR, "debug.log")
+_debug_log_fd = os.open(_debug_log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+_original_stdout_fd = os.dup(1)  # Save original stdout
+_original_stderr_fd = os.dup(2)  # Save original stderr
+os.dup2(_debug_log_fd, 1)  # Redirect fd 1 (stdout) to log file
+os.dup2(_debug_log_fd, 2)  # Redirect fd 2 (stderr) to log file
+
 import cv2
+
+# Restore stdout/stderr after cv2 import so Python print() works
+os.dup2(_original_stdout_fd, 1)
+os.dup2(_original_stderr_fd, 2)
+os.close(_debug_log_fd)
+os.close(_original_stdout_fd)
+os.close(_original_stderr_fd)
 import numpy as np
 import time
 import platform
-import os
-import sys
 import select
+from contextlib import contextmanager
+
+
+# Debug log file for initialization messages
+_debug_log_file = None
+
+
+def debug_print(msg):
+    """Print a message to the debug log file instead of stdout."""
+    global _debug_log_file
+    if _debug_log_file is None:
+        _debug_log_file = open(os.path.join(LOG_DIR, "debug.log"), "a")
+    _debug_log_file.write(msg + "\n")
+    _debug_log_file.flush()
+
+
+@contextmanager
+def suppress_output():
+    """Context manager to suppress stdout/stderr output, redirecting to debug log."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    log_fd = os.open(os.path.join(LOG_DIR, "debug.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    os.dup2(log_fd, 1)
+    os.dup2(log_fd, 2)
+    try:
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout, 1)
+        os.dup2(saved_stderr, 2)
+        os.close(log_fd)
+        os.close(saved_stdout)
+        os.close(saved_stderr)
 
 
 def is_display_available():
@@ -147,10 +209,32 @@ class JetsonCamera:
             return True
 
         pipeline = self._build_gstreamer_pipeline()
-        print(f"Opening camera with GStreamer pipeline...")
+        debug_print("Opening camera with GStreamer pipeline...")
 
         try:
+            # Suppress native library output during camera initialization
+            sys.stdout.flush()
+            sys.stderr.flush()
+            log_fd = os.open(os.path.join(LOG_DIR, "debug.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+            saved_stdout = os.dup(1)
+            saved_stderr = os.dup(2)
+            os.dup2(log_fd, 1)
+            os.dup2(log_fd, 2)
+
             self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+            # Warm up - read a few frames to stabilize
+            for _ in range(5):
+                self.cap.read()
+
+            # Restore stdout/stderr
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(log_fd)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
 
             if not self.cap.isOpened():
                 print("Error: Failed to open camera with GStreamer pipeline")
@@ -160,23 +244,42 @@ class JetsonCamera:
                 print("  3. OpenCV is built with GStreamer support")
                 return False
 
-            # Warm up - read a few frames to stabilize
-            for _ in range(5):
-                self.cap.read()
-
-            print(f"Camera opened successfully ({self.output_width}x{self.output_height})")
+            debug_print(f"Camera opened successfully ({self.output_width}x{self.output_height})")
             return True
 
         except Exception as e:
-            print(f"Error opening camera: {e}")
+            debug_print(f"Error opening camera: {e}")
             return False
 
     def close(self):
         """Close the camera connection."""
         if self.cap is not None:
+            # Suppress GStreamer cleanup messages which are printed asynchronously
+            sys.stdout.flush()
+            sys.stderr.flush()
+            log_fd = os.open(os.path.join(LOG_DIR, "debug.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+            saved_stdout = os.dup(1)
+            saved_stderr = os.dup(2)
+            os.dup2(log_fd, 1)
+            os.dup2(log_fd, 2)
+
             self.cap.release()
             self.cap = None
-            print("Camera closed")
+
+            # Give GStreamer time to complete async cleanup while output is suppressed
+            import time
+            time.sleep(0.5)
+
+            # Restore stdout/stderr
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(log_fd)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+
+            debug_print("Camera closed")
 
     def capture(self):
         """
@@ -220,7 +323,8 @@ class JetsonCamera:
 
         window_name = "Camera Preview"
         if display:
-            cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+            with suppress_output():
+                cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
         captured_frame = None
 
@@ -254,15 +358,17 @@ class JetsonCamera:
                 cv2.putText(display_frame, text, (x, y), font, font_scale, (0, 0, 0), thickness + 2)
                 cv2.putText(display_frame, text, (x, y), font, font_scale, (0, 255, 255), thickness)
 
-                cv2.imshow(window_name, display_frame)
-                cv2.waitKey(30)  # ~30fps, also processes window events
+                with suppress_output():
+                    cv2.imshow(window_name, display_frame)
+                    cv2.waitKey(30)  # ~30fps, also processes window events
 
                 # Check for terminal input (non-blocking)
                 if select.select([sys.stdin], [], [], 0.0)[0]:
                     user_input = sys.stdin.readline().strip().lower()
                     if user_input == 'q':
-                        cv2.destroyWindow(window_name)
-                        print("Capture cancelled by user")
+                        with suppress_output():
+                            cv2.destroyWindow(window_name)
+                        debug_print("Capture cancelled by user")
                         return None
                     else:
                         # Capture current frame
@@ -270,10 +376,11 @@ class JetsonCamera:
                         display_frame = frame.copy()
                         cv2.putText(display_frame, "CAPTURED!", (50, 100),
                                     cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
-                        cv2.imshow(window_name, display_frame)
-                        cv2.waitKey(500)
-                        cv2.destroyWindow(window_name)
-                        print("Captured!")
+                        with suppress_output():
+                            cv2.imshow(window_name, display_frame)
+                            cv2.waitKey(500)
+                            cv2.destroyWindow(window_name)
+                        debug_print("Captured!")
                         return captured_frame
         else:
             # No display mode: just prompt and capture
@@ -346,15 +453,16 @@ def display_image(image, window_name="Image", wait_key=True):
     return -1
 
 
-def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
+def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3, facelets_list=None):
     """
-    Display multiple images in a grid layout.
+    Display multiple images in a grid layout with optional facelet overlays.
 
     Args:
         images: List of BGR numpy arrays
         labels: Optional list of labels for each image
         window_name: Name for the display window
         cols: Number of columns in the grid
+        facelets_list: Optional list of facelets arrays (shape 3,3,64,64,3) to overlay on each image
     """
     if not images:
         print("Error: No images to display")
@@ -396,11 +504,41 @@ def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
         elif img.shape[0] != max_h or img.shape[1] != max_w:
             img = cv2.resize(img, (max_w, max_h))
 
+        # Make a copy to draw on
+        img = img.copy()
+
         # Add label if provided
         if labels and i < len(labels):
-            img = img.copy()
             cv2.putText(img, labels[i], (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+        # Overlay facelets if provided
+        if facelets_list and i < len(facelets_list) and facelets_list[i] is not None:
+            facelets = facelets_list[i]
+            # Each facelet is 64x64, display at half size (32x32)
+            facelet_size = 32
+            grid_width = 3 * facelet_size  # 96 pixels wide
+            grid_height = 3 * facelet_size  # 96 pixels tall
+
+            # Position: center bottom of image
+            grid_x = (max_w - grid_width) // 2
+            grid_y = max_h - grid_height - 5  # 5 pixel margin from bottom
+
+            # Draw facelets in 3x3 grid
+            for r in range(3):
+                for c in range(3):
+                    facelet = facelets[r, c]
+                    facelet_resized = cv2.resize(facelet, (facelet_size, facelet_size))
+
+                    fx = grid_x + c * facelet_size
+                    fy = grid_y + r * facelet_size
+
+                    # Place facelet on image
+                    img[fy:fy+facelet_size, fx:fx+facelet_size] = facelet_resized
+
+            # Draw border around facelet grid
+            cv2.rectangle(img, (grid_x - 1, grid_y - 1),
+                         (grid_x + grid_width, grid_y + grid_height), (255, 255, 255), 1)
 
         # Place in canvas
         y1 = row * max_h
@@ -409,19 +547,22 @@ def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
         x2 = x1 + max_w
         canvas[y1:y2, x1:x2] = img
 
-    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-    cv2.imshow(window_name, canvas)
+    with suppress_output():
+        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+        cv2.imshow(window_name, canvas)
 
     print("Press Enter to close the display...")
 
     # Keep updating display while waiting for terminal input
     while True:
-        cv2.waitKey(30)
+        with suppress_output():
+            cv2.waitKey(30)
         if select.select([sys.stdin], [], [], 0.0)[0]:
             sys.stdin.readline()
             break
 
-    cv2.destroyWindow(window_name)
+    with suppress_output():
+        cv2.destroyWindow(window_name)
 
 
 # Test code

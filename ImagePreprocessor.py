@@ -120,7 +120,7 @@ class ImagePreprocessor:
         Raises:
             ValueError: If method_name is not recognized
         """
-        name = method_name.lower()
+        name = method_name.lower().replace('_', '-')
         if name not in self._methods:
             available = ", ".join(sorted(self._methods.keys()))
             raise ValueError(f"Unknown preprocessing method: '{method_name}'. "
