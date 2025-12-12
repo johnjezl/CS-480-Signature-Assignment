@@ -9,6 +9,7 @@ Menu-driven application with multiple modes:
 
 Usage:
     python main.py [--display] [--v2] [--v3] [--v4] [--v5] [--rotate]
+                   [--segmenter-preprocess METHOD] [--cc-preprocess METHOD]
 
 Options:
     --display    Show captured images on display (for Jetson with monitor)
@@ -17,6 +18,14 @@ Options:
     --v4         Use v4 segmenter with OpenCV square detection (Canny + contours)
     --v5         Use v5 segmenter with brightness-based Otsu thresholding (Greg's CV)
     --rotate     Rotate camera images 180 degrees (for inverted camera mounting)
+    --segmenter-preprocess METHOD   Preprocess image before segmentation
+    --cc-preprocess METHOD          Preprocess image before color classification
+
+Preprocessing Methods:
+    none, bilateral, bilateral-strong, clahe-lab, clahe-hsv, unsharp, histeq,
+    histeq-v, morph-open, morph-close, satboost, satboost-mild, white-balance,
+    gamma-bright, gamma-dark, median, gaussian, contrast-stretch, bilateral-clahe,
+    bilateral-sat, clahe-sat, full-pipeline
 """
 
 import cv2
@@ -31,8 +40,10 @@ from facelet_segmenter_v2 import FaceletSegmenterV2
 from facelet_segmenter_v3 import FaceletSegmenterV3
 from facelet_segmenter_v4 import FaceletSegmenterV4
 from facelet_segmenter_v5 import FaceletSegmenterV5
+from facelet_segmenter_auto import FaceletSegmenterAuto
 from FaceletColorClassifier import FaceletColorClassifier
 from IDASolver import IDASolver, KociembaSolver
+from ImagePreprocessor import ImagePreprocessor
 
 # Try to import Jetson camera module
 try:
@@ -264,14 +275,18 @@ def display_face_and_facelets(image, facelets, window_name="Face and Facelets"):
     combined = np.hstack([face_scaled, gap_img, facelet_grid])
 
     # Display - destroy any existing window first to avoid showing stale content
-    cv2.destroyWindow(window_name)
-    cv2.waitKey(1)  # Process the destroy
+    try:
+        cv2.destroyWindow(window_name)
+        cv2.waitKey(1)  # Process the destroy
+    except cv2.error:
+        pass  # Window didn't exist yet, that's fine
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(window_name, combined)
     cv2.waitKey(100)  # Give more time for window to update
 
 
-def process_single_face(image_path, segmenter, classifier, side_name=None, display=False):
+def process_single_face(image_path, segmenter, classifier, side_name=None, display=False,
+                        segmenter_preprocess=None, cc_preprocess=None, preprocessor=None):
     """
     Process a single face image from file: segment and classify.
 
@@ -281,6 +296,9 @@ def process_single_face(image_path, segmenter, classifier, side_name=None, displ
         classifier: FaceletColorClassifier instance
         side_name: Name of the cube side for logging
         display: If True, show face and facelets on display
+        segmenter_preprocess: Preprocessing method name for segmentation
+        cc_preprocess: Preprocessing method name for color classification
+        preprocessor: ImagePreprocessor instance
 
     Returns:
         classifications or None on error
@@ -293,10 +311,12 @@ def process_single_face(image_path, segmenter, classifier, side_name=None, displ
         return None
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
 
-    return process_image(image, segmenter, classifier, side_name, display)
+    return process_image(image, segmenter, classifier, side_name, display,
+                        segmenter_preprocess, cc_preprocess, preprocessor)
 
 
-def process_image(image, segmenter, classifier, side_name=None, display=False):
+def process_image(image, segmenter, classifier, side_name=None, display=False,
+                  segmenter_preprocess=None, cc_preprocess=None, preprocessor=None):
     """
     Process an image (BGR numpy array): segment and classify.
 
@@ -306,47 +326,74 @@ def process_image(image, segmenter, classifier, side_name=None, display=False):
         classifier: FaceletColorClassifier instance
         side_name: Name of the cube side for logging (up, down, front, back, left, right)
         display: If True, show face and facelets on display
+        segmenter_preprocess: Preprocessing method name for segmentation (or None)
+        cc_preprocess: Preprocessing method name for color classification (or None)
+        preprocessor: ImagePreprocessor instance (required if preprocessing is specified)
 
     Returns:
         classifications or None on error
     """
     print(f"Image size: {image.shape[1]}x{image.shape[0]}")
 
+    # Preprocess for segmentation (start from original image)
+    if segmenter_preprocess and preprocessor and segmenter_preprocess.lower() != 'none':
+        print(f"Preprocessing for segmentation: {segmenter_preprocess}")
+        seg_image = preprocessor.apply(segmenter_preprocess, image)
+    else:
+        seg_image = image
+
     # Segment the image into facelets
     print("Segmenting image into 3x3 facelets...")
     start_time = time.time()
-    facelets = segmenter.segment(image)
+    facelets = segmenter.segment(seg_image)
     segment_time = time.time() - start_time
     print(f"Facelets shape: {facelets.shape} (took {segment_time:.3f}s)")
 
     # Display face and facelets if requested
     if display:
         window_name = f"Segmented: {side_name}" if side_name else "Segmented Face"
-        display_face_and_facelets(image, facelets, window_name)
+        display_face_and_facelets(seg_image, facelets, window_name)
 
     # Log face and facelets with serial number
     if side_name:
         serial = get_next_serial()
         log_face_and_facelets(image, facelets, side_name, serial)
 
+    # Preprocess for color classification (start from original image)
+    # Apply preprocessing to each facelet independently
+    if cc_preprocess and preprocessor and cc_preprocess.lower() != 'none':
+        print(f"Preprocessing facelets for color classification: {cc_preprocess}")
+        preprocessed_facelets = np.zeros_like(facelets)
+        for row in range(3):
+            for col in range(3):
+                preprocessed_facelets[row, col] = preprocessor.apply(cc_preprocess, facelets[row, col])
+        facelets_for_classification = preprocessed_facelets
+    else:
+        facelets_for_classification = facelets
+
     # Classify the colors
     print("Classifying facelet colors...")
     start_time = time.time()
-    classifications = classifier.classify_face(facelets)
+    classifications = classifier.classify_face(facelets_for_classification)
     classify_time = time.time() - start_time
     print(f"Classification complete (took {classify_time:.3f}s)")
 
     return classifications
 
 
-def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False, use_v5: bool = False):
+def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False,
+                     use_v5: bool = False, use_auto: bool = False,
+                     segmenter_preprocess: str = None, cc_preprocess: str = None):
     """Mode 1: Process a single face image."""
     print("\n" + "=" * 50)
     print("  SINGLE FACE MODE")
     print("=" * 50)
 
     # Initialize components with timing
-    if use_v5:
+    if use_auto:
+        segmenter_name = "FaceletSegmenterAuto"
+        segmenter_class = FaceletSegmenterAuto
+    elif use_v5:
         segmenter_name = "FaceletSegmenterV5"
         segmenter_class = FaceletSegmenterV5
     elif use_v4:
@@ -374,6 +421,16 @@ def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = 
     classifier_time = time.time() - start_time
     print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
+    # Initialize preprocessor if needed
+    preprocessor = None
+    if segmenter_preprocess or cc_preprocess:
+        print("\nInitializing ImagePreprocessor...")
+        preprocessor = ImagePreprocessor()
+        if segmenter_preprocess:
+            print(f"  Segmenter preprocessing: {segmenter_preprocess}")
+        if cc_preprocess:
+            print(f"  Color classifier preprocessing: {cc_preprocess}")
+
     # Get image path
     image_path = get_image_path()
     if image_path is None:
@@ -381,7 +438,9 @@ def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = 
         return
 
     # Process the face
-    classifications = process_single_face(image_path, segmenter, classifier, side_name="single")
+    classifications = process_single_face(image_path, segmenter, classifier, side_name="single",
+                                          segmenter_preprocess=segmenter_preprocess,
+                                          cc_preprocess=cc_preprocess, preprocessor=preprocessor)
     if classifications is None:
         return
 
@@ -467,7 +526,9 @@ def find_face_images(directory):
     return face_files
 
 
-def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False, use_v5: bool = False):
+def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False,
+                   use_v5: bool = False, use_auto: bool = False, display: bool = False,
+                   segmenter_preprocess: str = None, cc_preprocess: str = None):
     """Mode 2: Process all 6 faces and solve the cube."""
     print("\n" + "=" * 50)
     print("  FULL CUBE SOLVER MODE")
@@ -496,7 +557,10 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
         print(f"  {face_key}: {os.path.basename(face_files[face_key])}")
 
     # Initialize components with timing
-    if use_v5:
+    if use_auto:
+        segmenter_name = "FaceletSegmenterAuto"
+        segmenter_class = FaceletSegmenterAuto
+    elif use_v5:
         segmenter_name = "FaceletSegmenterV5"
         segmenter_class = FaceletSegmenterV5
     elif use_v4:
@@ -524,6 +588,16 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
     classifier_time = time.time() - start_time
     print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
+    # Initialize preprocessor if needed
+    preprocessor = None
+    if segmenter_preprocess or cc_preprocess:
+        print("\nInitializing ImagePreprocessor...")
+        preprocessor = ImagePreprocessor()
+        if segmenter_preprocess:
+            print(f"  Segmenter preprocessing: {segmenter_preprocess}")
+        if cc_preprocess:
+            print(f"  Color classifier preprocessing: {cc_preprocess}")
+
     # Dictionary to store face data for the solver
     cube_data = {}
 
@@ -535,8 +609,10 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
 
         image_path = face_files[face_key]
 
-        # Process the face with display enabled
-        classifications = process_single_face(image_path, segmenter, classifier, side_name=face_key, display=True)
+        # Process the face
+        classifications = process_single_face(image_path, segmenter, classifier, side_name=face_key, display=display,
+                                              segmenter_preprocess=segmenter_preprocess,
+                                              cc_preprocess=cc_preprocess, preprocessor=preprocessor)
         if classifications is None:
             print("\nError processing face. Aborting cube solve.")
             return
@@ -549,22 +625,29 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
 
         print(f"\n{face_display} face captured successfully!")
 
-        # Pause to review the displayed image
-        remaining = 6 - (i + 1)
-        if remaining > 0:
-            print(f"\n{remaining} face(s) remaining. Press Enter to continue (or 'q' to cancel)...")
+        # Pause to review the displayed image if display mode is on
+        if display:
+            remaining = 6 - (i + 1)
+            if remaining > 0:
+                print(f"\n{remaining} face(s) remaining. Press Enter to continue (or 'q' to cancel)...")
+            else:
+                print("\nPress Enter to continue to solver (or 'q' to cancel)...")
+            user_input = input("> ").strip().lower()
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)  # Process any pending window events after destroy
+            if user_input == 'q':
+                print("\nCancelled. Aborting cube solve.")
+                return
         else:
-            print("\nPress Enter to continue to solver (or 'q' to cancel)...")
-        user_input = input("> ").strip().lower()
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)  # Process any pending window events after destroy
-        if user_input == 'q':
-            print("\nCancelled. Aborting cube solve.")
-            return
+            # Show progress without pause
+            remaining = 6 - (i + 1)
+            if remaining > 0:
+                print(f"\n{remaining} face(s) remaining...")
 
     # Close any remaining display windows
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)  # Process any pending window events after destroy
+    if display:
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)  # Process any pending window events after destroy
 
     # All faces captured - prepare solver input
     print("\n" + "=" * 50)
@@ -624,7 +707,10 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
         print(f"\nError running solver: {e}")
 
 
-def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = False, use_v4: bool = False, use_v5: bool = False, rotate: bool = False):
+def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = False,
+                            use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
+                            rotate: bool = False, segmenter_preprocess: str = None,
+                            cc_preprocess: str = None):
     """
     Mode 3: Capture a single face from camera and classify.
 
@@ -635,6 +721,8 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
         use_v4: If True, use v4 segmenter with OpenCV square detection
         use_v5: If True, use v5 segmenter with brightness-based Otsu thresholding
         rotate: If True, rotate captured images 180 degrees
+        segmenter_preprocess: Preprocessing method name for segmentation
+        cc_preprocess: Preprocessing method name for color classification
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -645,7 +733,10 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
     print("=" * 50)
 
     # Initialize components with timing
-    if use_v5:
+    if use_auto:
+        segmenter_name = "FaceletSegmenterAuto"
+        segmenter_class = FaceletSegmenterAuto
+    elif use_v5:
         segmenter_name = "FaceletSegmenterV5"
         segmenter_class = FaceletSegmenterV5
     elif use_v4:
@@ -672,6 +763,16 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
     classifier = FaceletColorClassifier()
     classifier_time = time.time() - start_time
     print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
+
+    # Initialize preprocessor if needed
+    preprocessor = None
+    if segmenter_preprocess or cc_preprocess:
+        print("\nInitializing ImagePreprocessor...")
+        preprocessor = ImagePreprocessor()
+        if segmenter_preprocess:
+            print(f"  Segmenter preprocessing: {segmenter_preprocess}")
+        if cc_preprocess:
+            print(f"  Color classifier preprocessing: {cc_preprocess}")
 
     print("\nInitializing JetsonCamera...")
     start_time = time.time()
@@ -710,7 +811,9 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
 
         # Process the image
         print("\nProcessing captured image...")
-        classifications = process_image(image, segmenter, classifier, side_name="single", display=display)
+        classifications = process_image(image, segmenter, classifier, side_name="single", display=display,
+                                        segmenter_preprocess=segmenter_preprocess,
+                                        cc_preprocess=cc_preprocess, preprocessor=preprocessor)
 
         if classifications is None:
             return
@@ -729,7 +832,10 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
         camera.close()
 
 
-def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = False, use_v4: bool = False, use_v5: bool = False, rotate: bool = False):
+def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = False,
+                          use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
+                          rotate: bool = False, segmenter_preprocess: str = None,
+                          cc_preprocess: str = None):
     """
     Mode 4: Capture all 6 faces from camera and solve the cube.
 
@@ -740,6 +846,8 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
         use_v4: If True, use v4 segmenter with OpenCV square detection
         use_v5: If True, use v5 segmenter with brightness-based Otsu thresholding
         rotate: If True, rotate captured images 180 degrees
+        segmenter_preprocess: Preprocessing method name for segmentation
+        cc_preprocess: Preprocessing method name for color classification
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -752,7 +860,10 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
     print("Follow the on-screen instructions for each face.")
 
     # Initialize components with timing
-    if use_v5:
+    if use_auto:
+        segmenter_name = "FaceletSegmenterAuto"
+        segmenter_class = FaceletSegmenterAuto
+    elif use_v5:
         segmenter_name = "FaceletSegmenterV5"
         segmenter_class = FaceletSegmenterV5
     elif use_v4:
@@ -779,6 +890,16 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
     classifier = FaceletColorClassifier()
     classifier_time = time.time() - start_time
     print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
+
+    # Initialize preprocessor if needed
+    preprocessor = None
+    if segmenter_preprocess or cc_preprocess:
+        print("\nInitializing ImagePreprocessor...")
+        preprocessor = ImagePreprocessor()
+        if segmenter_preprocess:
+            print(f"  Segmenter preprocessing: {segmenter_preprocess}")
+        if cc_preprocess:
+            print(f"  Color classifier preprocessing: {cc_preprocess}")
 
     print("\nInitializing JetsonCamera...")
     start_time = time.time()
@@ -837,7 +958,9 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
 
             # Process the image
             print("\nProcessing captured image...")
-            classifications = process_image(image, segmenter, classifier, side_name=face_key, display=display)
+            classifications = process_image(image, segmenter, classifier, side_name=face_key, display=display,
+                                            segmenter_preprocess=segmenter_preprocess,
+                                            cc_preprocess=cc_preprocess, preprocessor=preprocessor)
 
             if classifications is None:
                 print("\nError processing face. Aborting cube solve.")
@@ -970,9 +1093,28 @@ def main():
         help='Use v5 segmenter with brightness-based Otsu thresholding (Greg\'s CV)'
     )
     parser.add_argument(
+        '--auto',
+        action='store_true',
+        help='Use auto-selecting segmenter (analyzes image to choose best algorithm)'
+    )
+    parser.add_argument(
         '--rotate',
         action='store_true',
         help='Rotate camera images 180 degrees (for inverted camera mounting)'
+    )
+    parser.add_argument(
+        '--segmenter-preprocess',
+        type=str,
+        default=None,
+        metavar='METHOD',
+        help='Preprocess image before segmentation (e.g., satboost, bilateral, clahe-lab)'
+    )
+    parser.add_argument(
+        '--cc-preprocess',
+        type=str,
+        default=None,
+        metavar='METHOD',
+        help='Preprocess image before color classification (e.g., satboost, bilateral, clahe-lab)'
     )
     args = parser.parse_args()
 
@@ -990,7 +1132,9 @@ def main():
         print("\n[Running on non-Jetson platform - File modes only]")
 
     # Show segmenter version
-    if args.v5:
+    if args.auto:
+        print("[Using AUTO segmenter - automatically selects best algorithm per image]")
+    elif args.v5:
         print("[Using V5 segmenter - brightness-based Otsu thresholding (Greg's CV)]")
     elif args.v4:
         print("[Using V4 segmenter - OpenCV square detection (Canny + contours)]")
@@ -1003,6 +1147,12 @@ def main():
 
     if args.rotate:
         print("[Camera rotation enabled - images will be rotated 180 degrees]")
+
+    # Show preprocessing options if set
+    if args.segmenter_preprocess:
+        print(f"[Segmenter preprocessing: {args.segmenter_preprocess}]")
+    if args.cc_preprocess:
+        print(f"[Color classifier preprocessing: {args.cc_preprocess}]")
 
     # Menu-driven loop
     while True:
@@ -1019,13 +1169,17 @@ def main():
         choice = input("> ").strip().lower()
 
         if choice == '1':
-            single_face_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5)
+            single_face_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto,
+                            segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
         elif choice == '2':
-            full_cube_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5)
+            full_cube_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, display=args.display,
+                          segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
         elif choice == '3' and JETSON_AVAILABLE:
-            camera_single_face_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, rotate=args.rotate)
+            camera_single_face_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
+                                   segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
         elif choice == '4' and JETSON_AVAILABLE:
-            camera_full_cube_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, rotate=args.rotate)
+            camera_full_cube_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
+                                 segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
         elif choice == 'q':
             print("\nGoodbye!")
             break
