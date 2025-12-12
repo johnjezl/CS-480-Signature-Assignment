@@ -1060,6 +1060,263 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
         print(f"\nError running solver: {e}")
 
 
+def camera_preprocess_comparison_mode(display=True, use_v2: bool = False, use_v3: bool = False,
+                                       use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
+                                       rotate: bool = False):
+    """
+    Mode 5: Capture a single face and compare all preprocessing methods.
+
+    Displays a tiled grid showing the segmentation result for each preprocessing
+    method, with the method name overlaid on each tile.
+
+    Args:
+        display: If True, show the comparison grid on display
+        use_v2: If True, use v2 segmenter
+        use_v3: If True, use v3 segmenter
+        use_v4: If True, use v4 segmenter
+        use_v5: If True, use v5 segmenter
+        use_auto: If True, use auto-selecting segmenter
+        rotate: If True, rotate captured images 180 degrees
+    """
+    if not JETSON_AVAILABLE:
+        print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
+        return
+
+    print("\n" + "=" * 50)
+    print("  PREPROCESSOR COMPARISON MODE")
+    print("=" * 50)
+    print("\nThis mode captures one face and shows segmentation results")
+    print("for all preprocessing methods side-by-side.")
+
+    # Initialize segmenter
+    if use_auto:
+        segmenter_name = "FaceletSegmenterAuto"
+        segmenter_class = FaceletSegmenterAuto
+    elif use_v5:
+        segmenter_name = "FaceletSegmenterV5"
+        segmenter_class = FaceletSegmenterV5
+    elif use_v4:
+        segmenter_name = "FaceletSegmenterV4"
+        segmenter_class = FaceletSegmenterV4
+    elif use_v3:
+        segmenter_name = "FaceletSegmenterV3"
+        segmenter_class = FaceletSegmenterV3
+    elif use_v2:
+        segmenter_name = "FaceletSegmenterV2"
+        segmenter_class = FaceletSegmenterV2
+    else:
+        segmenter_name = "FaceletSegmenter"
+        segmenter_class = FaceletSegmenter
+
+    print(f"\nInitializing {segmenter_name}...")
+    start_time = time.time()
+    segmenter = segmenter_class()
+    segmenter_time = time.time() - start_time
+    print(f"{segmenter_name} ready (took {segmenter_time:.3f}s)")
+
+    print("\nInitializing FaceletColorClassifier...")
+    start_time = time.time()
+    classifier = FaceletColorClassifier()
+    classifier_time = time.time() - start_time
+    print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
+
+    print("\nInitializing ImagePreprocessor...")
+    preprocessor = ImagePreprocessor()
+    preprocess_methods = preprocessor.get_available_methods()
+    print(f"Found {len(preprocess_methods)} preprocessing methods")
+
+    print("\nInitializing JetsonCamera...")
+    start_time = time.time()
+    camera = JetsonCamera()
+    if not camera.open():
+        print("Error: Failed to open camera.")
+        return
+    camera_time = time.time() - start_time
+    print(f"JetsonCamera ready (took {camera_time:.3f}s)")
+
+    try:
+        # Instructions
+        print("\n" + "-" * 50)
+        print("Hold the Rubik's Cube face in front of the camera.")
+        print("Make sure the face fills most of the frame.")
+        print("Press Enter when ready, or 'q' to cancel...")
+        print("-" * 50)
+
+        user_input = input("> ").strip().lower()
+        if user_input == 'q':
+            print("Cancelled.")
+            return
+
+        # Capture with live preview
+        image = camera.capture_with_preview(display=display, rotate=rotate)
+
+        if image is None:
+            print("Error: Failed to capture image.")
+            return
+
+        print(f"\nCaptured image: {image.shape[1]}x{image.shape[0]}")
+        print(f"\nProcessing {len(preprocess_methods)} preprocessing methods...")
+
+        # Process each preprocessing method
+        results = []  # List of (method_name, facelets, classifications, avg_conf)
+
+        for i, method in enumerate(preprocess_methods):
+            print(f"  [{i+1}/{len(preprocess_methods)}] {method}...", end=" ", flush=True)
+
+            # Apply preprocessing (start from original)
+            if method.lower() != 'none':
+                processed = preprocessor.apply(method, image)
+            else:
+                processed = image.copy()
+
+            # Segment
+            facelets = segmenter.segment(processed)
+
+            # Classify
+            classifications = classifier.classify_face(facelets)
+
+            # Calculate average confidence
+            total_conf = 0
+            for row in range(3):
+                for col in range(3):
+                    _, conf = classifications[row, col]
+                    total_conf += conf
+            avg_conf = total_conf / 9
+
+            results.append((method, facelets, classifications, avg_conf))
+            print(f"{avg_conf:.1f}%")
+
+        # Sort by confidence for ranking
+        sorted_results = sorted(results, key=lambda x: x[3], reverse=True)
+
+        # Print ranking
+        print("\n" + "=" * 50)
+        print("PREPROCESSING COMPARISON RESULTS")
+        print("=" * 50)
+        print(f"\n{'Rank':<5} {'Method':<20} {'Avg Confidence':<15}")
+        print("-" * 40)
+        for rank, (method, _, _, avg_conf) in enumerate(sorted_results, 1):
+            print(f"{rank:<5} {method:<20} {avg_conf:>10.1f}%")
+
+        # Create comparison grid image
+        # Layout: 5 columns (fits 22 methods in 5 rows)
+        cols = 5
+        rows = (len(results) + cols - 1) // cols
+
+        # Each tile: preprocessed image (resized) + 3x3 facelet grid + label
+        tile_w = 200
+        tile_h = 180
+        facelet_size = 40
+
+        grid_w = cols * tile_w
+        grid_h = rows * tile_h + 40  # Extra space for title
+
+        comparison_grid = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
+        comparison_grid[:] = (40, 40, 40)  # Dark gray background
+
+        # Title
+        cv2.putText(comparison_grid, f"Preprocessing Comparison ({segmenter_name})",
+                   (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Color map for display
+        COLOR_BGR = {
+            'white': (255, 255, 255),
+            'yellow': (0, 255, 255),
+            'red': (0, 0, 255),
+            'orange': (0, 165, 255),
+            'blue': (255, 0, 0),
+            'green': (0, 255, 0)
+        }
+
+        for idx, (method, facelets, classifications, avg_conf) in enumerate(results):
+            row = idx // cols
+            col = idx % cols
+
+            x_base = col * tile_w
+            y_base = row * tile_h + 40  # Offset for title
+
+            # Draw preprocessed image (small thumbnail)
+            if method.lower() != 'none':
+                processed = preprocessor.apply(method, image)
+            else:
+                processed = image.copy()
+
+            thumb_h = 80
+            thumb_w = int(processed.shape[1] * thumb_h / processed.shape[0])
+            if thumb_w > tile_w - 10:
+                thumb_w = tile_w - 10
+                thumb_h = int(processed.shape[0] * thumb_w / processed.shape[1])
+
+            thumb = cv2.resize(processed, (thumb_w, thumb_h))
+
+            # Center the thumbnail
+            thumb_x = x_base + (tile_w - thumb_w) // 2
+            thumb_y = y_base + 5
+
+            comparison_grid[thumb_y:thumb_y+thumb_h, thumb_x:thumb_x+thumb_w] = thumb
+
+            # Draw 3x3 color grid below thumbnail
+            grid_start_x = x_base + (tile_w - 3 * facelet_size) // 2
+            grid_start_y = thumb_y + thumb_h + 5
+
+            for r in range(3):
+                for c in range(3):
+                    color_name, conf = classifications[r, c]
+                    bgr = COLOR_BGR.get(color_name, (128, 128, 128))
+
+                    fx = grid_start_x + c * facelet_size
+                    fy = grid_start_y + r * facelet_size
+
+                    # Fill color square
+                    cv2.rectangle(comparison_grid, (fx+1, fy+1),
+                                 (fx+facelet_size-1, fy+facelet_size-1), bgr, -1)
+                    # Border
+                    cv2.rectangle(comparison_grid, (fx, fy),
+                                 (fx+facelet_size, fy+facelet_size), (80, 80, 80), 1)
+
+            # Method name and confidence label at bottom
+            label = f"{method}"
+            conf_label = f"{avg_conf:.1f}%"
+
+            # Find rank for color coding
+            rank = next(i for i, (m, _, _, _) in enumerate(sorted_results, 1) if m == method)
+            if rank <= 3:
+                label_color = (0, 255, 0)  # Green for top 3
+            elif rank <= 6:
+                label_color = (0, 255, 255)  # Yellow for top 6
+            else:
+                label_color = (200, 200, 200)  # Gray for rest
+
+            label_y = grid_start_y + 3 * facelet_size + 15
+            cv2.putText(comparison_grid, label, (x_base + 5, label_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, label_color, 1)
+            cv2.putText(comparison_grid, conf_label, (x_base + tile_w - 45, label_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, label_color, 1)
+
+        # Save the comparison grid
+        output_path = os.path.join("output_facelets", "preprocess_comparison.jpg")
+        os.makedirs("output_facelets", exist_ok=True)
+        cv2.imwrite(output_path, comparison_grid)
+        print(f"\nSaved comparison grid to {output_path}")
+
+        # Display if requested
+        if display:
+            cv2.namedWindow("Preprocessor Comparison", cv2.WINDOW_NORMAL)
+            cv2.imshow("Preprocessor Comparison", comparison_grid)
+            print("\nPress any key to close the display...")
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+
+        # Show best result
+        best_method, best_facelets, best_classifications, best_conf = sorted_results[0]
+        print(f"\nBest preprocessing method: {best_method} ({best_conf:.1f}% avg confidence)")
+        print_classification_results(best_classifications, f"Best ({best_method})")
+
+    finally:
+        camera.close()
+
+
 def main():
     """Main entry point for the application."""
     # Parse command line arguments
@@ -1163,6 +1420,7 @@ def main():
         if JETSON_AVAILABLE:
             print("  3. Single Face (Camera) - Capture and classify one face")
             print("  4. Full Cube (Camera)   - Capture 6 faces and solve")
+            print("  5. Preprocess Compare   - Compare all preprocessors on one face")
         print("  q. Quit")
         print("-" * 50)
 
@@ -1180,11 +1438,13 @@ def main():
         elif choice == '4' and JETSON_AVAILABLE:
             camera_full_cube_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
                                  segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
+        elif choice == '5' and JETSON_AVAILABLE:
+            camera_preprocess_comparison_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate)
         elif choice == 'q':
             print("\nGoodbye!")
             break
         else:
-            valid_choices = "1, 2, 3, 4, or q" if JETSON_AVAILABLE else "1, 2, or q"
+            valid_choices = "1, 2, 3, 4, 5, or q" if JETSON_AVAILABLE else "1, 2, or q"
             print(f"Invalid choice. Please enter {valid_choices}.")
 
 
