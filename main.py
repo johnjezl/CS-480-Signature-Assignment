@@ -167,14 +167,16 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 row, col = i // 3, i % 3
                 cube.faces[face_key][row, col] = color_map.get(colors[i], 'W')
 
-    # Get screen dimensions using DisplayManager's cross-platform method
-    screen_width, screen_height = dm.get_screen_size()
+    # Use a reasonable window size (not fullscreen)
+    window_width, window_height = 800, 800
 
-    renderer = CubeRenderer(screen_width, screen_height)
+    renderer = CubeRenderer(window_width, window_height)
     window_name = "Solution Animation"
 
-    # Create fullscreen window using DisplayManager
-    dm.create_fullscreen_window(window_name)
+    # Create a normal resizable window
+    dm.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    dm.resizeWindow(window_name, window_width, window_height)
+    dm.waitKey(1)  # Process window events
 
     print(f"\nAnimating {len(moves_list)} moves...")
     print("Press 'q' to skip animation, any other key to pause/resume")
@@ -220,10 +222,10 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
     # Show final solved state
     print(f"\n  Animation complete!")
     final_img = renderer.render_frame(cube, None, 0)
-    cv2.putText(final_img, "SOLVED!", (screen_width // 2 - 100, screen_height // 2),
+    cv2.putText(final_img, "SOLVED!", (window_width // 2 - 100, window_height // 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, cv2.LINE_AA)
     cv2.putText(final_img, "Press any key to continue",
-                (screen_width // 2 - 200, screen_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                (window_width // 2 - 200, window_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                 (255, 255, 255), 2, cv2.LINE_AA)
     dm.imshow(window_name, final_img)
 
@@ -237,7 +239,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
             if select.select([sys.stdin], [], [], 0)[0]:
                 sys.stdin.readline()
                 break
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OSError):
             # select doesn't work with stdin on Windows
             pass
 

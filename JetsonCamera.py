@@ -363,25 +363,29 @@ class JetsonCamera:
                     cv2.waitKey(30)  # ~30fps, also processes window events
 
                 # Check for terminal input (non-blocking)
-                if select.select([sys.stdin], [], [], 0.0)[0]:
-                    user_input = sys.stdin.readline().strip().lower()
-                    if user_input == 'q':
-                        with suppress_output():
-                            cv2.destroyWindow(window_name)
-                        debug_print("Capture cancelled by user")
-                        return None
-                    else:
-                        # Capture current frame
-                        captured_frame = frame.copy()
-                        display_frame = frame.copy()
-                        cv2.putText(display_frame, "CAPTURED!", (50, 100),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
-                        with suppress_output():
-                            cv2.imshow(window_name, display_frame)
-                            cv2.waitKey(500)
-                            cv2.destroyWindow(window_name)
-                        debug_print("Captured!")
-                        return captured_frame
+                try:
+                    if select.select([sys.stdin], [], [], 0.0)[0]:
+                        user_input = sys.stdin.readline().strip().lower()
+                        if user_input == 'q':
+                            with suppress_output():
+                                cv2.destroyWindow(window_name)
+                            debug_print("Capture cancelled by user")
+                            return None
+                        else:
+                            # Capture current frame
+                            captured_frame = frame.copy()
+                            display_frame = frame.copy()
+                            cv2.putText(display_frame, "CAPTURED!", (50, 100),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
+                            with suppress_output():
+                                cv2.imshow(window_name, display_frame)
+                                cv2.waitKey(500)
+                                cv2.destroyWindow(window_name)
+                            debug_print("Captured!")
+                            return captured_frame
+                except (TypeError, ValueError, OSError):
+                    # select doesn't work with stdin on Windows
+                    pass
         else:
             # No display mode: just prompt and capture
             print("Press Enter to capture (or 'q' to cancel)...")

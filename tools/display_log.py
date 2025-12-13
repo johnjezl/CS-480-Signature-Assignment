@@ -109,10 +109,16 @@ def main():
 
     # Keep updating display while waiting for terminal input
     while True:
-        cv2.waitKey(30)
-        if select.select([sys.stdin], [], [], 0.0)[0]:
-            sys.stdin.readline()
+        key = cv2.waitKey(30)
+        if key == 13 or key == 10:  # Enter key from OpenCV
             break
+        try:
+            if select.select([sys.stdin], [], [], 0.0)[0]:
+                sys.stdin.readline()
+                break
+        except (TypeError, ValueError, OSError):
+            # select doesn't work with stdin on Windows
+            pass
 
     cv2.destroyAllWindows()
 
