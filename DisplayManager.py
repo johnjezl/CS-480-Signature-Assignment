@@ -331,11 +331,23 @@ class DisplayManager:
         max_h = max(img.shape[0] for img in valid_images)
         max_w = max(img.shape[1] for img in valid_images)
 
-        # Scale down if images are too large
+        # Get actual screen size for proper scaling
+        screen_width, screen_height = self.get_screen_size()
+
+        # Leave some margin for window decorations and taskbar
+        target_width = int(screen_width * 0.95)
+        target_height = int(screen_height * 0.85)
+
+        # Calculate total canvas size before scaling
+        total_width = max_w * cols
+        total_height = max_h * rows
+
+        # Scale down if images are too large (consider both width AND height)
         scale = 1.0
-        target_width = 1920  # Max display width
-        if max_w * cols > target_width:
-            scale = target_width / (max_w * cols)
+        if total_width > target_width or total_height > target_height:
+            scale_w = target_width / total_width
+            scale_h = target_height / total_height
+            scale = min(scale_w, scale_h)
             max_w = int(max_w * scale)
             max_h = int(max_h * scale)
 
@@ -531,10 +543,14 @@ class DisplayManager:
 
         width, height = self.get_screen_size()
 
-        self.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
+        # Create window with WINDOW_NORMAL flag to allow resizing/fullscreen
+        self.namedWindow(window_name, cv2.WINDOW_NORMAL)
         self.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         self.moveWindow(window_name, 0, 0)
         self.resizeWindow(window_name, width, height)
+
+        # Process window events to ensure window is visible
+        self.waitKey(1)
 
         return width, height
 
