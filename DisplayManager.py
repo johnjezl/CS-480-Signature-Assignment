@@ -331,25 +331,30 @@ class DisplayManager:
         max_h = max(img.shape[0] for img in valid_images)
         max_w = max(img.shape[1] for img in valid_images)
 
-        # Get actual screen size for proper scaling
-        screen_width, screen_height = self.get_screen_size()
+        # Calculate total canvas size before scaling
+        total_width = max_w * cols
+        total_height = max_h * rows
+
+        # Get screen size for scaling, with safe fallback
+        try:
+            screen_width, screen_height = self.get_screen_size()
+            if screen_width <= 0 or screen_height <= 0:
+                screen_width, screen_height = 1920, 1080
+        except:
+            screen_width, screen_height = 1920, 1080
 
         # Leave some margin for window decorations and taskbar
         target_width = int(screen_width * 0.95)
         target_height = int(screen_height * 0.85)
 
-        # Calculate total canvas size before scaling
-        total_width = max_w * cols
-        total_height = max_h * rows
-
         # Scale down if images are too large (consider both width AND height)
         scale = 1.0
         if total_width > target_width or total_height > target_height:
-            scale_w = target_width / total_width
-            scale_h = target_height / total_height
+            scale_w = target_width / total_width if total_width > 0 else 1.0
+            scale_h = target_height / total_height if total_height > 0 else 1.0
             scale = min(scale_w, scale_h)
-            max_w = int(max_w * scale)
-            max_h = int(max_h * scale)
+            max_w = max(int(max_w * scale), 1)
+            max_h = max(int(max_h * scale), 1)
 
         # Create canvas
         canvas = np.zeros((rows * max_h, cols * max_w, 3), dtype=np.uint8)
@@ -472,13 +477,6 @@ class DisplayManager:
         # Combine face and facelet grid side by side
         gap_img = np.zeros((grid_size, spacing, 3), dtype=np.uint8)
         combined = np.hstack([face_scaled, gap_img, facelet_grid])
-
-        # Display - destroy existing window first to avoid stale content
-        try:
-            self.destroyWindow(window_name)
-            self.waitKey(1)
-        except:
-            pass
 
         self.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
         self.imshow(window_name, combined)

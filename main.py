@@ -167,15 +167,14 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 row, col = i // 3, i % 3
                 cube.faces[face_key][row, col] = color_map.get(colors[i], 'W')
 
-    # Use a reasonable window size (not fullscreen)
+    # Use a reasonable window size
     window_width, window_height = 800, 800
 
     renderer = CubeRenderer(window_width, window_height)
     window_name = "Solution Animation"
 
-    # Create a normal resizable window
-    dm.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    dm.resizeWindow(window_name, window_width, window_height)
+    # Create window - use AUTOSIZE for better compatibility across platforms
+    dm.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     dm.waitKey(1)  # Process window events
 
     print(f"\nAnimating {len(moves_list)} moves...")
@@ -187,11 +186,13 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
     while move_idx < len(moves_list):
         move = moves_list[move_idx]
 
-        # Show move label
-        print(f"  Move {move_idx + 1}/{len(moves_list)}: {move}", end='\r')
+        # Show move label (pad with spaces to clear previous text)
+        status = "[PAUSED] " if paused else ""
+        print(f"\r  {status}Move {move_idx + 1}/{len(moves_list)}: {move:<3}       ", end='', flush=True)
 
-        # Animate this move
-        for frame in range(frames_per_move + 1):
+        # Animate this move using while loop so pause can freeze frame
+        frame = 0
+        while frame <= frames_per_move:
             angle_fraction = frame / frames_per_move
 
             # Ease in-out for smoother animation
@@ -199,28 +200,39 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
             img = renderer.render_frame(cube, move, ease_fraction)
 
-            # Add move counter
-            cv2.putText(img, f"Move {move_idx + 1}/{len(moves_list)}: {move}",
+            # Add move counter to image
+            status_text = "[PAUSED] " if paused else ""
+            cv2.putText(img, f"{status_text}Move {move_idx + 1}/{len(moves_list)}: {move}",
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                         (255, 255, 255), 2, cv2.LINE_AA)
 
             dm.imshow(window_name, img)
 
-            key = dm.waitKey(delay_ms if not paused else 0)
-            if key == ord('q'):
-                print("\n  Animation skipped.")
+            # Use short timeout even when paused to keep window responsive
+            key = dm.waitKey(delay_ms if not paused else 50)
+            # Mask to get actual key code (needed for some platforms)
+            key = key & 0xFF
+            if key == ord('q') or key == ord('Q'):
+                print("\r  Animation skipped.                         ")
                 dm.destroyAllWindows()
                 dm.waitKey(1)
                 return
-            elif key != -1:
+            elif key != 255 and key != 0:  # Valid key pressed (not 'no key')
                 paused = not paused
+                # Update console status immediately when pause state changes
+                status = "[PAUSED] " if paused else ""
+                print(f"\r  {status}Move {move_idx + 1}/{len(moves_list)}: {move:<3}       ", end='', flush=True)
+
+            # Only advance frame if not paused
+            if not paused:
+                frame += 1
 
         # Apply the move to cube state
         cube.apply_move(move)
         move_idx += 1
 
     # Show final solved state
-    print(f"\n  Animation complete!")
+    print("\r  Animation complete!                         ")
     final_img = renderer.render_frame(cube, None, 0)
     cv2.putText(final_img, "SOLVED!", (window_width // 2 - 100, window_height // 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, cv2.LINE_AA)
@@ -231,8 +243,8 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
     # Wait for key using non-blocking approach to avoid input freeze
     while True:
-        key = dm.waitKey(100)
-        if key != -1:
+        key = dm.waitKey(100) & 0xFF
+        if key != 255 and key != 0:
             break
         # Also check for Enter key in terminal
         try:
