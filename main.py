@@ -182,17 +182,40 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
     paused = False
     move_idx = 0
+    last_status_len = 0  # Track length for proper clearing
+
+    def print_status(status_str):
+        """Print status with proper line clearing for Windows compatibility."""
+        nonlocal last_status_len
+        # Pad with spaces to clear previous content
+        padded = status_str.ljust(last_status_len)
+        sys.stdout.write(f"\r{padded}")
+        sys.stdout.flush()
+        last_status_len = len(status_str)
+
+    def window_closed():
+        """Check if window was closed by user."""
+        try:
+            return cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1
+        except cv2.error:
+            return True
 
     while move_idx < len(moves_list):
         move = moves_list[move_idx]
 
-        # Show move label (pad with spaces to clear previous text)
+        # Show move label
         status = "[PAUSED] " if paused else ""
-        print(f"\r  {status}Move {move_idx + 1}/{len(moves_list)}: {move:<3}       ", end='', flush=True)
+        print_status(f"  {status}Move {move_idx + 1}/{len(moves_list)}: {move}")
 
         # Animate this move using while loop so pause can freeze frame
         frame = 0
         while frame <= frames_per_move:
+            # Check if window was closed
+            if window_closed():
+                print_status("  Animation cancelled.")
+                print()  # New line
+                return
+
             angle_fraction = frame / frames_per_move
 
             # Ease in-out for smoother animation
@@ -213,7 +236,8 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
             # Mask to get actual key code (needed for some platforms)
             key = key & 0xFF
             if key == ord('q') or key == ord('Q'):
-                print("\r  Animation skipped.                         ")
+                print_status("  Animation skipped.")
+                print()  # New line
                 dm.destroyAllWindows()
                 dm.waitKey(1)
                 return
@@ -221,7 +245,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 paused = not paused
                 # Update console status immediately when pause state changes
                 status = "[PAUSED] " if paused else ""
-                print(f"\r  {status}Move {move_idx + 1}/{len(moves_list)}: {move:<3}       ", end='', flush=True)
+                print_status(f"  {status}Move {move_idx + 1}/{len(moves_list)}: {move}")
 
             # Only advance frame if not paused
             if not paused:
@@ -232,7 +256,8 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
         move_idx += 1
 
     # Show final solved state
-    print("\r  Animation complete!                         ")
+    print_status("  Animation complete!")
+    print()  # New line
     final_img = renderer.render_frame(cube, None, 0)
     cv2.putText(final_img, "SOLVED!", (window_width // 2 - 100, window_height // 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, cv2.LINE_AA)
@@ -241,12 +266,15 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 (255, 255, 255), 2, cv2.LINE_AA)
     dm.imshow(window_name, final_img)
 
-    # Wait for key using non-blocking approach to avoid input freeze
+    # Wait for key or window close
     while True:
+        # Check if window was closed
+        if window_closed():
+            break
         key = dm.waitKey(100) & 0xFF
         if key != 255 and key != 0:
             break
-        # Also check for Enter key in terminal
+        # Also check for Enter key in terminal (Unix only)
         try:
             if select.select([sys.stdin], [], [], 0)[0]:
                 sys.stdin.readline()
@@ -255,18 +283,9 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
             # select doesn't work with stdin on Windows
             pass
 
-    # Properly clean up OpenCV windows to prevent input freeze
+    # Properly clean up OpenCV windows
     dm.destroyAllWindows()
-    # Process pending events multiple times to ensure cleanup
-    for _ in range(10):
-        dm.waitKey(1)
-
-    # Flush stdin to clear any buffered input (Unix only)
-    try:
-        import termios
-        termios.tcflush(sys.stdin, termios.TCIFLUSH)
-    except Exception:
-        pass
+    dm.waitKey(1)
 
 
 
