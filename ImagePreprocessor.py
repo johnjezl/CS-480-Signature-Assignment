@@ -100,6 +100,18 @@ class ImagePreprocessor:
         self._register("full-pipeline", self._full_pipeline,
                       "Full pipeline: bilateral + CLAHE + saturation")
 
+        # HSV-based methods
+        self._register("sat-threshold", self._saturation_threshold,
+                      "HSV saturation thresholding - enhances colorful regions")
+        self._register("sat-threshold-strong", self._saturation_threshold_strong,
+                      "Strong HSV saturation thresholding - aggressive color enhancement")
+
+        # Color masking for Rubik's cube colors
+        self._register("cube-color-mask", self._cube_color_mask,
+                      "Mask and enhance standard Rubik's cube colors (W,Y,R,O,B,G)")
+        self._register("cube-color-mask-soft", self._cube_color_mask_soft,
+                      "Soft color masking - gentler enhancement of cube colors")
+
     def _register(self, name: str, method: Callable[[np.ndarray], np.ndarray],
                   description: str):
         """Register a preprocessing method."""
@@ -280,6 +292,158 @@ class ImagePreprocessor:
         hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.2, 0, 255)
         return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    def _saturation_threshold(self, img: np.ndarray) -> np.ndarray:
+        """
+        HSV saturation thresholding - enhances colorful regions.
+
+        Boosts saturation for pixels above a threshold, helping to
+        distinguish colored cube facelets from low-saturation backgrounds.
+        """
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+        # Get saturation channel
+        sat = hsv[:, :, 1]
+
+        # Threshold: pixels with saturation > 30 get boosted
+        # Low saturation pixels (background, white) are slightly reduced
+        mask_colorful = sat > 30
+        mask_dull = sat <= 30
+
+        # Boost colorful regions
+        hsv[:, :, 1][mask_colorful] = np.clip(sat[mask_colorful] * 1.4, 0, 255)
+
+        # Slightly reduce dull regions to increase contrast
+        hsv[:, :, 1][mask_dull] = sat[mask_dull] * 0.8
+
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    def _saturation_threshold_strong(self, img: np.ndarray) -> np.ndarray:
+        """
+        Strong HSV saturation thresholding - aggressive color enhancement.
+
+        More aggressive version that strongly boosts saturated colors
+        and suppresses low-saturation areas.
+        """
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+        sat = hsv[:, :, 1]
+
+        # Higher threshold, stronger boost
+        mask_colorful = sat > 40
+        mask_dull = sat <= 40
+
+        # Strong boost for colorful regions
+        hsv[:, :, 1][mask_colorful] = np.clip(sat[mask_colorful] * 1.8, 0, 255)
+
+        # Suppress dull regions more aggressively
+        hsv[:, :, 1][mask_dull] = sat[mask_dull] * 0.5
+
+        # Also slightly boost value for colorful regions to make them pop
+        val = hsv[:, :, 2]
+        hsv[:, :, 2][mask_colorful] = np.clip(val[mask_colorful] * 1.1, 0, 255)
+
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    def _cube_color_mask(self, img: np.ndarray) -> np.ndarray:
+        """
+        Mask and enhance standard Rubik's cube colors.
+
+        Creates masks for each of the 6 cube colors (white, yellow, red,
+        orange, blue, green) and enhances pixels matching those colors
+        while suppressing non-cube-color regions.
+        """
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        result = img.copy()
+
+        # Define HSV ranges for each cube color
+        # Format: (lower_h, upper_h, min_s, max_s, min_v, max_v)
+        color_ranges = {
+            # White: low saturation, high value
+            'white': [(0, 180, 0, 50, 180, 255)],
+            # Yellow: hue 20-35
+            'yellow': [(20, 35, 80, 255, 150, 255)],
+            # Orange: hue 10-20
+            'orange': [(10, 20, 120, 255, 150, 255)],
+            # Red: hue 0-10 and 170-180 (wraps around)
+            'red': [(0, 10, 100, 255, 100, 255), (170, 180, 100, 255, 100, 255)],
+            # Green: hue 35-85
+            'green': [(35, 85, 80, 255, 80, 255)],
+            # Blue: hue 85-130
+            'blue': [(85, 130, 80, 255, 80, 255)],
+        }
+
+        # Create combined mask for all cube colors
+        combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+
+        for color_name, ranges in color_ranges.items():
+            for (h_low, h_high, s_low, s_high, v_low, v_high) in ranges:
+                lower = np.array([h_low, s_low, v_low])
+                upper = np.array([h_high, s_high, v_high])
+                mask = cv2.inRange(hsv, lower, upper)
+                combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        # Dilate mask slightly to catch edge pixels
+        kernel = np.ones((3, 3), np.uint8)
+        combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+
+        # Enhance colors in masked regions
+        hsv_float = hsv.astype(np.float32)
+
+        # Boost saturation for cube colors
+        hsv_float[:, :, 1][combined_mask > 0] = np.clip(
+            hsv_float[:, :, 1][combined_mask > 0] * 1.3, 0, 255)
+
+        # Slightly reduce saturation for non-cube-colors (background)
+        hsv_float[:, :, 1][combined_mask == 0] *= 0.7
+
+        result = cv2.cvtColor(hsv_float.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        return result
+
+    def _cube_color_mask_soft(self, img: np.ndarray) -> np.ndarray:
+        """
+        Soft color masking - gentler enhancement of cube colors.
+
+        Similar to cube_color_mask but with softer thresholds and
+        less aggressive enhancement for more subtle correction.
+        """
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+        # Wider, more forgiving HSV ranges
+        color_ranges = {
+            'white': [(0, 180, 0, 70, 160, 255)],
+            'yellow': [(15, 40, 60, 255, 120, 255)],
+            'orange': [(5, 25, 80, 255, 120, 255)],
+            'red': [(0, 15, 70, 255, 80, 255), (165, 180, 70, 255, 80, 255)],
+            'green': [(30, 90, 50, 255, 60, 255)],
+            'blue': [(80, 135, 50, 255, 60, 255)],
+        }
+
+        combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+
+        for color_name, ranges in color_ranges.items():
+            for (h_low, h_high, s_low, s_high, v_low, v_high) in ranges:
+                lower = np.array([h_low, s_low, v_low])
+                upper = np.array([h_high, s_high, v_high])
+                mask = cv2.inRange(hsv, lower, upper)
+                combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        # Softer dilation
+        kernel = np.ones((5, 5), np.uint8)
+        combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+
+        # Gentler enhancement
+        hsv_float = hsv.astype(np.float32)
+
+        # Mild saturation boost for cube colors
+        hsv_float[:, :, 1][combined_mask > 0] = np.clip(
+            hsv_float[:, :, 1][combined_mask > 0] * 1.15, 0, 255)
+
+        # Very mild reduction for non-cube-colors
+        hsv_float[:, :, 1][combined_mask == 0] *= 0.9
+
+        return cv2.cvtColor(hsv_float.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
 def print_available_methods():

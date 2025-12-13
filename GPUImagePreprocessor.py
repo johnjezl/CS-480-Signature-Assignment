@@ -120,6 +120,18 @@ class GPUImagePreprocessor:
         self._register("full-pipeline", self._full_pipeline,
                       "Full pipeline: bilateral + CLAHE + saturation", gpu=True)
 
+        # HSV saturation thresholding methods
+        self._register("sat-threshold", self._saturation_threshold,
+                      "HSV saturation thresholding - enhances colorful regions", gpu=False)
+        self._register("sat-threshold-strong", self._saturation_threshold_strong,
+                      "Strong HSV saturation thresholding - aggressive color enhancement", gpu=False)
+
+        # Color masking for Rubik's cube colors
+        self._register("cube-color-mask", self._cube_color_mask,
+                      "Mask and enhance standard Rubik's cube colors (W,Y,R,O,B,G)", gpu=False)
+        self._register("cube-color-mask-soft", self._cube_color_mask_soft,
+                      "Soft color masking - gentler enhancement of cube colors", gpu=False)
+
     def _register(self, name: str, method: Callable[[np.ndarray], np.ndarray],
                   description: str, gpu: bool = False):
         """Register a preprocessing method."""
@@ -418,6 +430,89 @@ class GPUImagePreprocessor:
         hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.2, 0, 255)
         return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    def _saturation_threshold(self, img: np.ndarray) -> np.ndarray:
+        """HSV saturation thresholding - enhances colorful regions."""
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        s = hsv[:, :, 1]
+        # Boost saturation for pixels that are already somewhat colorful
+        mask = s > 30
+        hsv[:, :, 1] = np.where(mask, np.clip(s * 1.5, 0, 255), s * 0.5)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    def _saturation_threshold_strong(self, img: np.ndarray) -> np.ndarray:
+        """Strong HSV saturation thresholding - aggressive color enhancement."""
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        s = hsv[:, :, 1]
+        # More aggressive thresholding
+        mask = s > 40
+        hsv[:, :, 1] = np.where(mask, np.clip(s * 1.8, 0, 255), s * 0.3)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    def _cube_color_mask(self, img: np.ndarray) -> np.ndarray:
+        """Mask and enhance standard Rubik's cube colors."""
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        result = img.copy().astype(np.float32)
+
+        # Define HSV ranges for cube colors (H is 0-179 in OpenCV)
+        color_ranges = [
+            # White - low saturation, high value
+            ((0, 0, 180), (179, 50, 255)),
+            # Yellow - hue around 20-35
+            ((18, 80, 150), (35, 255, 255)),
+            # Red - hue around 0-10 or 170-179
+            ((0, 100, 100), (10, 255, 255)),
+            ((170, 100, 100), (179, 255, 255)),
+            # Orange - hue around 10-22
+            ((10, 100, 100), (22, 255, 255)),
+            # Blue - hue around 100-130
+            ((100, 100, 80), (130, 255, 255)),
+            # Green - hue around 40-80
+            ((40, 80, 80), (80, 255, 255)),
+        ]
+
+        # Create combined mask
+        combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in color_ranges:
+            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        # Enhance colors within the mask
+        mask_3d = combined_mask[:, :, np.newaxis] / 255.0
+        result = result * (1 + 0.3 * mask_3d)
+        return np.clip(result, 0, 255).astype(np.uint8)
+
+    def _cube_color_mask_soft(self, img: np.ndarray) -> np.ndarray:
+        """Soft color masking - gentler enhancement of cube colors."""
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        result = img.copy().astype(np.float32)
+
+        # Wider HSV ranges for softer matching
+        color_ranges = [
+            # White - low saturation
+            ((0, 0, 160), (179, 70, 255)),
+            # Yellow
+            ((15, 60, 130), (40, 255, 255)),
+            # Red (both ends of hue spectrum)
+            ((0, 70, 80), (12, 255, 255)),
+            ((165, 70, 80), (179, 255, 255)),
+            # Orange
+            ((8, 80, 80), (25, 255, 255)),
+            # Blue
+            ((95, 70, 60), (135, 255, 255)),
+            # Green
+            ((35, 60, 60), (85, 255, 255)),
+        ]
+
+        combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in color_ranges:
+            mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        # Gentler enhancement
+        mask_3d = combined_mask[:, :, np.newaxis] / 255.0
+        result = result * (1 + 0.2 * mask_3d)
+        return np.clip(result, 0, 255).astype(np.uint8)
 
 
 # For backwards compatibility, create an alias
