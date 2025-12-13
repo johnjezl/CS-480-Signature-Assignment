@@ -8,8 +8,9 @@ Menu-driven application with multiple modes:
 4. Camera Full Cube: Capture all 6 faces from camera and solve (Jetson only)
 
 Usage:
-    python main.py [--display] [--v2] [--v3] [--v4] [--v5] [--rotate]
+    python main.py [--display] [--v2] [--v3] [--v4] [--v5] [--rotate] [--animate]
                    [--segmenter-preprocess METHOD] [--cc-preprocess METHOD]
+                   [--all-segmenter-preprocess] [--all-cc-preprocess] [--force-centers]
 
 Options:
     --display    Show captured images on display (for Jetson with monitor)
@@ -18,8 +19,12 @@ Options:
     --v4         Use v4 segmenter with OpenCV square detection (Canny + contours)
     --v5         Use v5 segmenter with brightness-based Otsu thresholding (Greg's CV)
     --rotate     Rotate camera images 180 degrees (for inverted camera mounting)
+    --animate    Animate the solution moves on a 3D cube visualization after solving
     --segmenter-preprocess METHOD   Preprocess image before segmentation
     --cc-preprocess METHOD          Preprocess image before color classification
+    --all-segmenter-preprocess      Try all preprocessing methods for segmentation
+    --all-cc-preprocess             Try all preprocessing methods for color classification
+    --force-centers                 Force center facelets to match expected colors
 
 Preprocessing Methods:
     none, bilateral, bilateral-strong, clahe-lab, clahe-hsv, unsharp, histeq,
@@ -44,6 +49,7 @@ from facelet_segmenter_auto import FaceletSegmenterAuto
 from FaceletColorClassifier import FaceletColorClassifier
 from IDASolver import IDASolver, KociembaSolver
 from ImagePreprocessor import ImagePreprocessor
+from tools.cube_move_animator import CubeRenderer, CubeState
 
 # Try to import Jetson camera module
 try:
@@ -110,6 +116,380 @@ class TermColors:
             'G': (cls.BG_GREEN, cls.FG_BLACK),
         }
         return color_map.get(color_letter.upper(), (cls.BG_BLACK, cls.FG_WHITE))
+
+
+def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
+    """
+    Animate the solution moves on a 3D cube visualization.
+
+    Args:
+        cube_data: Dict with face colors {'up': ['W','W',...], 'down': [...], ...}
+        moves_list: List of move strings ['R', "U'", 'F2', ...]
+        delay_ms: Delay between animation frames in milliseconds
+        frames_per_move: Number of frames per move animation
+    """
+    import math
+
+    # Map cube_data face names to CubeState face names
+    face_map = {'up': 'U', 'down': 'D', 'front': 'F', 'back': 'B', 'right': 'R', 'left': 'L'}
+    color_map = {'W': 'W', 'Y': 'Y', 'R': 'R', 'O': 'O', 'B': 'B', 'G': 'G'}
+
+    # Create cube state from scanned data
+    cube = CubeState()
+    for face_name, face_key in face_map.items():
+        if face_name in cube_data:
+            colors = cube_data[face_name]
+            for i in range(9):
+                row, col = i // 3, i % 3
+                cube.faces[face_key][row, col] = color_map.get(colors[i], 'W')
+
+    # Try to get screen dimensions for fullscreen rendering
+    try:
+        # Try to get screen size - this works on systems with xrandr
+        import subprocess
+        result = subprocess.run(['xrandr'], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if '*' in line:  # Current resolution has asterisk
+                parts = line.split()[0].split('x')
+                screen_width, screen_height = int(parts[0]), int(parts[1])
+                break
+        else:
+            screen_width, screen_height = 1920, 1080  # Default fallback
+    except Exception:
+        screen_width, screen_height = 1920, 1080  # Default fallback
+
+    renderer = CubeRenderer(screen_width, screen_height)
+    window_name = "Solution Animation"
+
+    # Create fullscreen window - try multiple methods for compatibility
+    cv2.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.moveWindow(window_name, 0, 0)
+    cv2.resizeWindow(window_name, screen_width, screen_height)
+
+    print(f"\nAnimating {len(moves_list)} moves...")
+    print("Press 'q' to skip animation, any other key to pause/resume")
+
+    paused = False
+    move_idx = 0
+
+    while move_idx < len(moves_list):
+        move = moves_list[move_idx]
+
+        # Show move label
+        print(f"  Move {move_idx + 1}/{len(moves_list)}: {move}", end='\r')
+
+        # Animate this move
+        for frame in range(frames_per_move + 1):
+            angle_fraction = frame / frames_per_move
+
+            # Ease in-out for smoother animation
+            ease_fraction = 0.5 - 0.5 * math.cos(math.pi * angle_fraction)
+
+            img = renderer.render_frame(cube, move, ease_fraction)
+
+            # Add move counter
+            cv2.putText(img, f"Move {move_idx + 1}/{len(moves_list)}: {move}",
+                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                        (255, 255, 255), 2, cv2.LINE_AA)
+
+            cv2.imshow(window_name, img)
+
+            key = cv2.waitKey(delay_ms if not paused else 0)
+            if key == ord('q'):
+                print("\n  Animation skipped.")
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)
+                return
+            elif key != -1:
+                paused = not paused
+
+        # Apply the move to cube state
+        cube.apply_move(move)
+        move_idx += 1
+
+    # Show final solved state
+    print(f"\n  Animation complete!")
+    final_img = renderer.render_frame(cube, None, 0)
+    cv2.putText(final_img, "SOLVED!", (screen_width // 2 - 100, screen_height // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, cv2.LINE_AA)
+    cv2.putText(final_img, "Press any key to continue",
+                (screen_width // 2 - 200, screen_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.imshow(window_name, final_img)
+
+    # Wait for key using non-blocking approach to avoid input freeze
+    import select
+    import sys
+    while True:
+        key = cv2.waitKey(100)
+        if key != -1:
+            break
+        # Also check for Enter key in terminal
+        if select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.readline()
+            break
+
+    # Properly clean up OpenCV windows to prevent input freeze
+    cv2.destroyAllWindows()
+    # Process pending events multiple times to ensure cleanup
+    for _ in range(10):
+        cv2.waitKey(1)
+
+    # Flush stdin to clear any buffered input
+    import termios
+    try:
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
+# Expected center colors for each face (standard cube orientation)
+EXPECTED_CENTERS = {
+    'up': 'Y',      # Yellow
+    'down': 'W',    # White
+    'front': 'B',   # Blue
+    'back': 'G',    # Green
+    'left': 'O',    # Orange
+    'right': 'R',   # Red
+}
+
+# Color name to letter mapping
+COLOR_TO_LETTER = {
+    'white': 'W', 'yellow': 'Y', 'red': 'R',
+    'orange': 'O', 'blue': 'B', 'green': 'G'
+}
+
+
+def evaluate_cube_result(cube_data, force_centers=False):
+    """
+    Evaluate a cube classification result.
+
+    Args:
+        cube_data: Dict with face colors {'up': ['W','W',...], 'down': [...], ...}
+        force_centers: If True, check that centers match expected colors
+
+    Returns:
+        tuple: (is_valid, score, details)
+            - is_valid: True if color counts are all 9 (and centers match if forced)
+            - score: Total confidence score (higher is better)
+            - details: Dict with evaluation details
+    """
+    color_counts = {'W': 0, 'Y': 0, 'R': 0, 'O': 0, 'B': 0, 'G': 0}
+    total_confidence = 0
+    centers_match = True
+    center_details = {}
+
+    for face_name, colors in cube_data.items():
+        for color in colors:
+            if color in color_counts:
+                color_counts[color] += 1
+
+        # Check center (index 4 in a 3x3 face)
+        center_color = colors[4] if len(colors) > 4 else None
+        expected_center = EXPECTED_CENTERS.get(face_name)
+        center_details[face_name] = {
+            'actual': center_color,
+            'expected': expected_center,
+            'match': center_color == expected_center
+        }
+        if center_color != expected_center:
+            centers_match = False
+
+    # Check if all colors appear exactly 9 times
+    is_even = all(count == 9 for count in color_counts.values())
+
+    # Validity depends on even distribution and optionally center matching
+    is_valid = is_even and (not force_centers or centers_match)
+
+    details = {
+        'color_counts': color_counts,
+        'is_even': is_even,
+        'centers_match': centers_match,
+        'center_details': center_details
+    }
+
+    return is_valid, total_confidence, details
+
+
+def evaluate_preprocessing_combination(face_images, facelets_by_face, segmenter, classifier,
+                                        preprocessor, seg_method, cc_method, force_centers=False):
+    """
+    Evaluate a single preprocessing combination for all faces.
+
+    Args:
+        face_images: Dict of face_name -> original image
+        facelets_by_face: Dict of face_name -> facelets array (3,3,64,64,3)
+        segmenter: FaceletSegmenter instance
+        classifier: FaceletColorClassifier instance
+        preprocessor: ImagePreprocessor instance
+        seg_method: Segmentation preprocessing method name (or None)
+        cc_method: Color classification preprocessing method name (or None)
+        force_centers: If True, require centers to match expected colors
+
+    Returns:
+        tuple: (cube_data, confidence_scores, is_valid, total_confidence, details)
+    """
+    cube_data = {}
+    confidence_scores = {}
+    total_confidence = 0.0
+
+    for face_name in FACE_NAMES:
+        if face_name not in facelets_by_face:
+            continue
+
+        facelets = facelets_by_face[face_name]
+        face_colors = []
+        face_confidences = []
+
+        for row in range(3):
+            for col in range(3):
+                facelet = facelets[row, col]
+
+                # Apply CC preprocessing if specified
+                if cc_method and cc_method.lower() != 'none':
+                    facelet = preprocessor.apply(cc_method, facelet)
+
+                color, conf = classifier.classify_facelet(facelet)
+                face_colors.append(COLOR_TO_LETTER.get(color, '?'))
+                face_confidences.append(conf)
+                total_confidence += conf
+
+        cube_data[face_name] = face_colors
+        confidence_scores[face_name] = face_confidences
+
+    is_valid, _, details = evaluate_cube_result(cube_data, force_centers)
+
+    return cube_data, confidence_scores, is_valid, total_confidence, details
+
+
+def find_best_preprocessing_combination(face_images, segmenter, classifier, preprocessor,
+                                          all_seg_preprocess=False, all_cc_preprocess=False,
+                                          seg_method=None, cc_method=None, force_centers=False,
+                                          use_v2=False, use_v3=False, use_v4=False, use_v5=False, use_auto=False):
+    """
+    Find the best preprocessing combination that produces valid cube results.
+
+    Args:
+        face_images: Dict of face_name -> original image
+        segmenter: FaceletSegmenter instance
+        classifier: FaceletColorClassifier instance
+        preprocessor: ImagePreprocessor instance
+        all_seg_preprocess: If True, try all segmentation preprocessing methods
+        all_cc_preprocess: If True, try all CC preprocessing methods
+        seg_method: Single segmentation preprocessing method (if not all)
+        cc_method: Single CC preprocessing method (if not all)
+        force_centers: If True, require centers to match expected colors
+        use_v2/v3/v4/v5/auto: Segmenter version flags
+
+    Returns:
+        tuple: (best_cube_data, best_confidences, seg_method, cc_method, all_results)
+            or (None, None, None, None, all_results) if no valid combination found
+    """
+    methods = preprocessor.get_available_methods()
+
+    # Determine which methods to try
+    seg_methods = methods if all_seg_preprocess else [seg_method or 'none']
+    cc_methods = methods if all_cc_preprocess else [cc_method or 'none']
+
+    # First, segment all faces with each segmentation preprocessing method
+    # Cache segmented facelets to avoid re-segmenting for each CC method
+    segmented_cache = {}  # seg_method -> {face_name -> facelets}
+
+    print(f"\nEvaluating preprocessing combinations...")
+    print(f"  Segmenter methods: {len(seg_methods)}")
+    print(f"  Classifier methods: {len(cc_methods)}")
+    print(f"  Total combinations: {len(seg_methods) * len(cc_methods)}")
+
+    for seg_m in seg_methods:
+        segmented_cache[seg_m] = {}
+
+        for face_name, image in face_images.items():
+            # Apply segmentation preprocessing
+            if seg_m and seg_m.lower() != 'none':
+                processed_image = preprocessor.apply(seg_m, image)
+            else:
+                processed_image = image
+
+            # Segment the face
+            facelets = segmenter.segment(processed_image)
+            if facelets is not None:
+                segmented_cache[seg_m][face_name] = facelets
+
+    # Now try all CC preprocessing combinations
+    valid_results = []
+    all_results = []
+
+    total_combos = len(seg_methods) * len(cc_methods)
+    combo_num = 0
+
+    for seg_m in seg_methods:
+        if seg_m not in segmented_cache or not segmented_cache[seg_m]:
+            continue
+
+        for cc_m in cc_methods:
+            combo_num += 1
+            print(f"\r  Testing {combo_num}/{total_combos}: seg={seg_m}, cc={cc_m}    ", end='')
+
+            cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination(
+                face_images, segmented_cache[seg_m], segmenter, classifier,
+                preprocessor, seg_m, cc_m, force_centers
+            )
+
+            result = {
+                'seg_method': seg_m,
+                'cc_method': cc_m,
+                'cube_data': cube_data,
+                'confidence_scores': conf_scores,
+                'is_valid': is_valid,
+                'total_confidence': total_conf,
+                'details': details
+            }
+            all_results.append(result)
+
+            if is_valid:
+                valid_results.append(result)
+
+    print()  # Newline after progress
+
+    if not valid_results:
+        print("\n  No valid preprocessing combinations found!")
+        # Show the best invalid result
+        if all_results:
+            best_invalid = max(all_results, key=lambda r: r['total_confidence'])
+            print(f"  Best invalid result: seg={best_invalid['seg_method']}, cc={best_invalid['cc_method']}")
+            print(f"  Color counts: {best_invalid['details']['color_counts']}")
+        return None, None, None, None, all_results
+
+    # Sort valid results by total confidence (descending)
+    valid_results.sort(key=lambda r: r['total_confidence'], reverse=True)
+
+    # Check for ties at the top
+    top_confidence = valid_results[0]['total_confidence']
+    top_results = [r for r in valid_results if abs(r['total_confidence'] - top_confidence) < 0.01]
+
+    if len(top_results) > 1:
+        print(f"\n  WARNING: {len(top_results)} combinations tied with confidence {top_confidence:.1f}")
+        for r in top_results[:5]:  # Show up to 5
+            print(f"    seg={r['seg_method']}, cc={r['cc_method']}")
+
+        # If there's a true tie, raise error
+        if len(top_results) > 1:
+            # Check if they produce the same cube_data
+            first_data = str(top_results[0]['cube_data'])
+            all_same = all(str(r['cube_data']) == first_data for r in top_results)
+            if all_same:
+                print("  All tied results produce the same cube state - using first.")
+            else:
+                print("  ERROR: Tied results produce different cube states!")
+                return None, None, None, None, all_results
+
+    best = valid_results[0]
+    print(f"\n  Best combination: seg={best['seg_method']}, cc={best['cc_method']}")
+    print(f"  Total confidence: {best['total_confidence']:.1f}")
+
+    return (best['cube_data'], best['confidence_scores'],
+            best['seg_method'], best['cc_method'], all_results)
 
 
 def print_cube_net(cube_data, use_color=True):
@@ -635,7 +1015,9 @@ def find_face_images(directory):
 
 def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False,
                    use_v5: bool = False, use_auto: bool = False, display: bool = False,
-                   segmenter_preprocess: str = None, cc_preprocess: str = None):
+                   segmenter_preprocess: str = None, cc_preprocess: str = None,
+                   animate: bool = False, all_seg_preprocess: bool = False,
+                   all_cc_preprocess: bool = False, force_centers: bool = False):
     """Mode 2: Process all 6 faces and solve the cube."""
     print("\n" + "=" * 50)
     print("  FULL CUBE SOLVER MODE")
@@ -697,84 +1079,123 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
     classifier_time = time.time() - start_time
     debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
-    # Initialize preprocessor if needed
-    preprocessor = None
-    if segmenter_preprocess or cc_preprocess:
-        debug_print("Initializing ImagePreprocessor...")
-        preprocessor = ImagePreprocessor()
-        if segmenter_preprocess:
-            debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
-        if cc_preprocess:
-            debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
+    # Initialize preprocessor (always needed for all_* modes)
+    debug_print("Initializing ImagePreprocessor...")
+    preprocessor = ImagePreprocessor()
+    if segmenter_preprocess:
+        debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
+    if cc_preprocess:
+        debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
 
     # Dictionary to store face data for the solver
     cube_data = {}
-    captured_images = []
+    captured_images = {}
     captured_facelets = []
 
-    # Process each face
-    for i, (face_key, face_display) in enumerate(zip(FACE_NAMES, FACE_DISPLAY_NAMES)):
-        print(f"\n{'#' * 50}")
-        print(f"  FACE {i+1}/6: {face_display}")
-        print("#" * 50)
+    # Check if we need to do multi-preprocessing evaluation
+    use_multi_preprocess = all_seg_preprocess or all_cc_preprocess
 
-        image_path = face_files[face_key]
+    if use_multi_preprocess:
+        # Load all face images first
+        print("\nLoading all face images...")
+        for face_key in FACE_NAMES:
+            image_path = face_files[face_key]
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"\nError: Could not load image for {face_key}")
+                return
+            captured_images[face_key] = image
+            print(f"  Loaded {face_key}: {os.path.basename(image_path)}")
 
-        # Load image for later display
-        image = cv2.imread(image_path)
-        if image is not None:
-            captured_images.append(image.copy())
+        # Use the multi-preprocessing evaluation function
+        best_cube_data, best_confidences, best_seg, best_cc, all_results = find_best_preprocessing_combination(
+            captured_images, segmenter, classifier, preprocessor,
+            all_seg_preprocess=all_seg_preprocess,
+            all_cc_preprocess=all_cc_preprocess,
+            seg_method=segmenter_preprocess,
+            cc_method=cc_preprocess,
+            force_centers=force_centers,
+            use_v2=use_v2, use_v3=use_v3, use_v4=use_v4, use_v5=use_v5, use_auto=use_auto
+        )
 
-        # Process the face
-        classifications, facelets = process_single_face(image_path, segmenter, classifier, side_name=face_key, display=display,
-                                              segmenter_preprocess=segmenter_preprocess,
-                                              cc_preprocess=cc_preprocess, preprocessor=preprocessor)
-        if classifications is None:
-            print("\nError processing face. Aborting cube solve.")
+        if best_cube_data is None:
+            print("\nError: No valid preprocessing combination found. Aborting cube solve.")
             return
 
-        # Store facelets for later display
-        captured_facelets.append(facelets)
+        cube_data = best_cube_data
+        print(f"\nUsing: segmenter-preprocess={best_seg}, cc-preprocess={best_cc}")
 
-        # Get results
-        face_string, face_array = print_classification_results(classifications, face_display)
+        # Convert captured_images dict to list for display
+        captured_images_list = [captured_images[face_key] for face_key in FACE_NAMES]
 
-        # Store for solver
-        cube_data[face_key] = face_array
+    else:
+        # Original single-pass processing
+        captured_images_list = []
 
-        print(f"\n{face_display} face captured successfully!")
+        # Process each face
+        for i, (face_key, face_display) in enumerate(zip(FACE_NAMES, FACE_DISPLAY_NAMES)):
+            print(f"\n{'#' * 50}")
+            print(f"  FACE {i+1}/6: {face_display}")
+            print("#" * 50)
 
-        # Pause to review the displayed image if display mode is on
-        if display:
-            remaining = 6 - (i + 1)
-            if remaining > 0:
-                print(f"\n{remaining} face(s) remaining. Press Enter to continue (or 'q' to cancel)...")
+            image_path = face_files[face_key]
+
+            # Load image for later display
+            image = cv2.imread(image_path)
+            if image is not None:
+                captured_images_list.append(image.copy())
+                captured_images[face_key] = image
+
+            # Process the face
+            classifications, facelets = process_single_face(image_path, segmenter, classifier, side_name=face_key, display=display,
+                                                  segmenter_preprocess=segmenter_preprocess,
+                                                  cc_preprocess=cc_preprocess, preprocessor=preprocessor)
+            if classifications is None:
+                print("\nError processing face. Aborting cube solve.")
+                return
+
+            # Store facelets for later display
+            captured_facelets.append(facelets)
+
+            # Get results
+            face_string, face_array = print_classification_results(classifications, face_display)
+
+            # Store for solver
+            cube_data[face_key] = face_array
+
+            print(f"\n{face_display} face captured successfully!")
+
+            # Pause to review the displayed image if display mode is on
+            if display:
+                remaining = 6 - (i + 1)
+                if remaining > 0:
+                    print(f"\n{remaining} face(s) remaining. Press Enter to continue (or 'q' to cancel)...")
+                else:
+                    print("\nPress Enter to continue to solver (or 'q' to cancel)...")
+                user_input = input("> ").strip().lower()
+                with suppress_output():
+                    cv2.destroyAllWindows()
+                    cv2.waitKey(1)  # Process any pending window events after destroy
+                if user_input == 'q':
+                    print("\nCancelled. Aborting cube solve.")
+                    return
             else:
-                print("\nPress Enter to continue to solver (or 'q' to cancel)...")
-            user_input = input("> ").strip().lower()
+                # Show progress without pause
+                remaining = 6 - (i + 1)
+                if remaining > 0:
+                    print(f"\n{remaining} face(s) remaining...")
+
+        # Close any remaining display windows
+        if display:
             with suppress_output():
                 cv2.destroyAllWindows()
                 cv2.waitKey(1)  # Process any pending window events after destroy
-            if user_input == 'q':
-                print("\nCancelled. Aborting cube solve.")
-                return
-        else:
-            # Show progress without pause
-            remaining = 6 - (i + 1)
-            if remaining > 0:
-                print(f"\n{remaining} face(s) remaining...")
-
-    # Close any remaining display windows
-    if display:
-        with suppress_output():
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)  # Process any pending window events after destroy
 
     # Display all images with facelets if requested
-    if display and captured_images:
+    if display and captured_images_list:
         print("\nDisplaying all captured faces...")
-        display_images_grid(captured_images, labels=FACE_DISPLAY_NAMES,
-                            window_name="All Cube Faces", cols=3, facelets_list=captured_facelets)
+        display_images_grid(captured_images_list, labels=FACE_DISPLAY_NAMES,
+                            window_name="All Cube Faces", cols=3, facelets_list=captured_facelets if captured_facelets else None)
 
     # All faces captured - prepare solver input
     print("\n" + "=" * 50)
@@ -838,6 +1259,10 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
             moves = solution.split()
             print(f"Total moves: {len(moves)}")
             print(f"Solve time: {solve_time:.3f}s")
+
+            # Animate solution if requested
+            if animate and moves:
+                animate_solution(cube_data, moves)
         else:
             print("\nError: Solution file not found.")
 
@@ -977,7 +1402,9 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
 def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = False,
                           use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
                           rotate: bool = False, segmenter_preprocess: str = None,
-                          cc_preprocess: str = None):
+                          cc_preprocess: str = None, animate: bool = False,
+                          all_seg_preprocess: bool = False, all_cc_preprocess: bool = False,
+                          force_centers: bool = False):
     """
     Mode 4: Capture all 6 faces from camera and solve the cube.
 
@@ -989,7 +1416,11 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
         use_v5: If True, use v5 segmenter with brightness-based Otsu thresholding
         rotate: If True, rotate captured images 180 degrees
         segmenter_preprocess: Preprocessing method name for segmentation
+        animate: If True, animate the solution moves after solving
         cc_preprocess: Preprocessing method name for color classification
+        all_seg_preprocess: If True, try all segmentation preprocessing methods
+        all_cc_preprocess: If True, try all CC preprocessing methods
+        force_centers: If True, require centers to match expected colors
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -1035,15 +1466,13 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
     classifier_time = time.time() - start_time
     debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
-    # Initialize preprocessor if needed
-    preprocessor = None
-    if segmenter_preprocess or cc_preprocess:
-        debug_print("Initializing ImagePreprocessor...")
-        preprocessor = ImagePreprocessor()
-        if segmenter_preprocess:
-            debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
-        if cc_preprocess:
-            debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
+    # Initialize preprocessor (always needed for all_* modes)
+    debug_print("Initializing ImagePreprocessor...")
+    preprocessor = ImagePreprocessor()
+    if segmenter_preprocess:
+        debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
+    if cc_preprocess:
+        debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
 
     debug_print("Initializing JetsonCamera...")
     start_time = time.time()
@@ -1072,11 +1501,15 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
 
     # Dictionary to store face data and images
     cube_data = {}
-    captured_images = []
+    captured_images = {}  # Dict for multi-preprocess mode
+    captured_images_list = []  # List for display
     captured_facelets = []
 
+    # Check if we need to do multi-preprocessing evaluation
+    use_multi_preprocess = all_seg_preprocess or all_cc_preprocess
+
     try:
-        # Process each face
+        # Capture each face
         for i, (face_key, face_display) in enumerate(zip(FACE_NAMES, FACE_DISPLAY_NAMES)):
             print(f"\n{'#' * 50}")
             print(f"  FACE {i+1}/6: {face_display}")
@@ -1092,27 +1525,29 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
                 print("Error: Failed to capture image. Aborting.")
                 return
 
-            # Store for later display
-            captured_images.append(image.copy())
+            # Store for later processing and display
+            captured_images[face_key] = image.copy()
+            captured_images_list.append(image.copy())
 
-            # Process the image
-            debug_print("Processing captured image...")
-            classifications, facelets = process_image(image, segmenter, classifier, side_name=face_key, display=display,
-                                            segmenter_preprocess=segmenter_preprocess,
-                                            cc_preprocess=cc_preprocess, preprocessor=preprocessor)
+            if not use_multi_preprocess:
+                # Process immediately in single-pass mode
+                debug_print("Processing captured image...")
+                classifications, facelets = process_image(image, segmenter, classifier, side_name=face_key, display=display,
+                                                segmenter_preprocess=segmenter_preprocess,
+                                                cc_preprocess=cc_preprocess, preprocessor=preprocessor)
 
-            if classifications is None:
-                print("\nError processing face. Aborting cube solve.")
-                return
+                if classifications is None:
+                    print("\nError processing face. Aborting cube solve.")
+                    return
 
-            # Store facelets for later display
-            captured_facelets.append(facelets)
+                # Store facelets for later display
+                captured_facelets.append(facelets)
 
-            # Get results
-            face_string, face_array = print_classification_results(classifications, face_display)
+                # Get results
+                face_string, face_array = print_classification_results(classifications, face_display)
 
-            # Store for solver
-            cube_data[face_key] = face_array
+                # Store for solver
+                cube_data[face_key] = face_array
 
             print(f"\n{face_display} face captured successfully!")
 
@@ -1139,11 +1574,30 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
         with suppress_output():
             camera.close()
 
+    # If multi-preprocess mode, evaluate all combinations now
+    if use_multi_preprocess:
+        best_cube_data, best_confidences, best_seg, best_cc, all_results = find_best_preprocessing_combination(
+            captured_images, segmenter, classifier, preprocessor,
+            all_seg_preprocess=all_seg_preprocess,
+            all_cc_preprocess=all_cc_preprocess,
+            seg_method=segmenter_preprocess,
+            cc_method=cc_preprocess,
+            force_centers=force_centers,
+            use_v2=use_v2, use_v3=use_v3, use_v4=use_v4, use_v5=use_v5, use_auto=use_auto
+        )
+
+        if best_cube_data is None:
+            print("\nError: No valid preprocessing combination found. Aborting cube solve.")
+            return
+
+        cube_data = best_cube_data
+        print(f"\nUsing: segmenter-preprocess={best_seg}, cc-preprocess={best_cc}")
+
     # All faces captured - display all images if requested
-    if display and captured_images:
+    if display and captured_images_list:
         print("\nDisplaying all captured faces...")
-        display_images_grid(captured_images, labels=FACE_DISPLAY_NAMES,
-                            window_name="All Cube Faces", cols=3, facelets_list=captured_facelets)
+        display_images_grid(captured_images_list, labels=FACE_DISPLAY_NAMES,
+                            window_name="All Cube Faces", cols=3, facelets_list=captured_facelets if captured_facelets else None)
 
     # Prepare solver input
     print("\n" + "=" * 50)
@@ -1207,6 +1661,10 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
             moves = solution.split()
             print(f"Total moves: {len(moves)}")
             print(f"Solve time: {solve_time:.3f}s")
+
+            # Animate solution if requested
+            if animate and moves:
+                animate_solution(cube_data, moves)
         else:
             print("\nError: Solution file not found.")
 
@@ -1875,6 +2333,26 @@ def main():
         metavar='METHOD',
         help='Preprocess image before color classification (e.g., satboost, bilateral, clahe-lab)'
     )
+    parser.add_argument(
+        '--animate',
+        action='store_true',
+        help='Animate the solution moves on a 3D cube visualization after solving'
+    )
+    parser.add_argument(
+        '--all-segmenter-preprocess',
+        action='store_true',
+        help='Try all preprocessing methods for segmentation and select best result'
+    )
+    parser.add_argument(
+        '--all-cc-preprocess',
+        action='store_true',
+        help='Try all preprocessing methods for color classification and select best result'
+    )
+    parser.add_argument(
+        '--force-centers',
+        action='store_true',
+        help='Force center facelets to match expected colors (Y/W/B/G/O/R for up/down/front/back/left/right)'
+    )
     args = parser.parse_args()
 
     # Validate preprocessing options
@@ -1959,13 +2437,17 @@ def main():
                             segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
         elif choice == '2':
             full_cube_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, display=args.display,
-                          segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
+                          segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess,
+                          animate=args.animate, all_seg_preprocess=args.all_segmenter_preprocess,
+                          all_cc_preprocess=args.all_cc_preprocess, force_centers=args.force_centers)
         elif choice == '3' and JETSON_AVAILABLE:
             camera_single_face_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
                                    segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
         elif choice == '4' and JETSON_AVAILABLE:
             camera_full_cube_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
-                                 segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
+                                 segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess,
+                                 animate=args.animate, all_seg_preprocess=args.all_segmenter_preprocess,
+                                 all_cc_preprocess=args.all_cc_preprocess, force_centers=args.force_centers)
         elif choice == '5' and JETSON_AVAILABLE:
             camera_segmenter_preprocess_comparison_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate)
         elif choice == '6' and JETSON_AVAILABLE:
