@@ -49,6 +49,7 @@ from facelet_segmenter_auto import FaceletSegmenterAuto
 from FaceletColorClassifier import FaceletColorClassifier
 from IDASolver import IDASolver, KociembaSolver
 from ImagePreprocessor import ImagePreprocessor
+from GPUImagePreprocessor import GPUImagePreprocessor
 from tools.cube_move_animator import CubeRenderer, CubeState
 
 # Try to import Jetson camera module
@@ -868,7 +869,8 @@ def process_image(image, segmenter, classifier, side_name=None, display=False,
 
 def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = False,
                      use_v5: bool = False, use_auto: bool = False,
-                     segmenter_preprocess: str = None, cc_preprocess: str = None):
+                     segmenter_preprocess: str = None, cc_preprocess: str = None,
+                     use_gpu: bool = True):
     """Mode 1: Process a single face image."""
     print("\n" + "=" * 50)
     print("  SINGLE FACE MODE")
@@ -911,8 +913,8 @@ def single_face_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = 
     # Initialize preprocessor if needed
     preprocessor = None
     if segmenter_preprocess or cc_preprocess:
-        debug_print("Initializing ImagePreprocessor...")
-        preprocessor = ImagePreprocessor()
+        debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
+        preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
         if segmenter_preprocess:
             debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
         if cc_preprocess:
@@ -1017,7 +1019,8 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
                    use_v5: bool = False, use_auto: bool = False, display: bool = False,
                    segmenter_preprocess: str = None, cc_preprocess: str = None,
                    animate: bool = False, all_seg_preprocess: bool = False,
-                   all_cc_preprocess: bool = False, force_centers: bool = False):
+                   all_cc_preprocess: bool = False, force_centers: bool = False,
+                   use_gpu: bool = True):
     """Mode 2: Process all 6 faces and solve the cube."""
     print("\n" + "=" * 50)
     print("  FULL CUBE SOLVER MODE")
@@ -1080,8 +1083,8 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
     debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
     # Initialize preprocessor (always needed for all_* modes)
-    debug_print("Initializing ImagePreprocessor...")
-    preprocessor = ImagePreprocessor()
+    debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
+    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
     if segmenter_preprocess:
         debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
     if cc_preprocess:
@@ -1273,7 +1276,7 @@ def full_cube_mode(use_v2: bool = False, use_v3: bool = False, use_v4: bool = Fa
 def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = False,
                             use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
                             rotate: bool = False, segmenter_preprocess: str = None,
-                            cc_preprocess: str = None):
+                            cc_preprocess: str = None, use_gpu: bool = True):
     """
     Mode 3: Capture a single face from camera and classify.
 
@@ -1286,6 +1289,7 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
         rotate: If True, rotate captured images 180 degrees
         segmenter_preprocess: Preprocessing method name for segmentation
         cc_preprocess: Preprocessing method name for color classification
+        use_gpu: If True, use GPU acceleration for preprocessing
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -1332,8 +1336,8 @@ def camera_single_face_mode(display=False, use_v2: bool = False, use_v3: bool = 
     # Initialize preprocessor if needed
     preprocessor = None
     if segmenter_preprocess or cc_preprocess:
-        debug_print("Initializing ImagePreprocessor...")
-        preprocessor = ImagePreprocessor()
+        debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
+        preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
         if segmenter_preprocess:
             debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
         if cc_preprocess:
@@ -1404,7 +1408,7 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
                           rotate: bool = False, segmenter_preprocess: str = None,
                           cc_preprocess: str = None, animate: bool = False,
                           all_seg_preprocess: bool = False, all_cc_preprocess: bool = False,
-                          force_centers: bool = False):
+                          force_centers: bool = False, use_gpu: bool = True):
     """
     Mode 4: Capture all 6 faces from camera and solve the cube.
 
@@ -1421,6 +1425,7 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
         all_seg_preprocess: If True, try all segmentation preprocessing methods
         all_cc_preprocess: If True, try all CC preprocessing methods
         force_centers: If True, require centers to match expected colors
+        use_gpu: If True, use GPU acceleration for preprocessing
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -1467,8 +1472,8 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
     debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
     # Initialize preprocessor (always needed for all_* modes)
-    debug_print("Initializing ImagePreprocessor...")
-    preprocessor = ImagePreprocessor()
+    debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
+    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
     if segmenter_preprocess:
         debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
     if cc_preprocess:
@@ -1674,7 +1679,7 @@ def camera_full_cube_mode(display=False, use_v2: bool = False, use_v3: bool = Fa
 
 def camera_segmenter_preprocess_comparison_mode(display=True, use_v2: bool = False, use_v3: bool = False,
                                                  use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
-                                                 rotate: bool = False):
+                                                 rotate: bool = False, use_gpu: bool = True):
     """
     Mode 5: Capture a single face and compare all preprocessing methods for segmentation.
 
@@ -1734,10 +1739,11 @@ def camera_segmenter_preprocess_comparison_mode(display=True, use_v2: bool = Fal
     classifier_time = time.time() - start_time
     debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
-    debug_print("Initializing ImagePreprocessor...")
-    preprocessor = ImagePreprocessor()
+    debug_print("Initializing GPUImagePreprocessor...")
+    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
     preprocess_methods = preprocessor.get_available_methods()
-    debug_print(f"Found {len(preprocess_methods)} preprocessing methods")
+    gpu_status = "GPU" if preprocessor.is_gpu_enabled() else "CPU"
+    debug_print(f"Found {len(preprocess_methods)} preprocessing methods ({gpu_status})")
 
     debug_print("Initializing JetsonCamera...")
     start_time = time.time()
@@ -1974,7 +1980,7 @@ def camera_segmenter_preprocess_comparison_mode(display=True, use_v2: bool = Fal
 
 def camera_classifier_preprocess_comparison_mode(display=True, use_v2: bool = False, use_v3: bool = False,
                                                   use_v4: bool = False, use_v5: bool = False, use_auto: bool = False,
-                                                  rotate: bool = False):
+                                                  rotate: bool = False, use_gpu: bool = True):
     """
     Mode 6: Capture a single face and compare all preprocessing methods for color classification.
 
@@ -2034,10 +2040,11 @@ def camera_classifier_preprocess_comparison_mode(display=True, use_v2: bool = Fa
     classifier_time = time.time() - start_time
     debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
 
-    debug_print("Initializing ImagePreprocessor...")
-    preprocessor = ImagePreprocessor()
+    debug_print("Initializing GPUImagePreprocessor...")
+    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
     preprocess_methods = preprocessor.get_available_methods()
-    debug_print(f"Found {len(preprocess_methods)} preprocessing methods")
+    gpu_status = "GPU" if preprocessor.is_gpu_enabled() else "CPU"
+    debug_print(f"Found {len(preprocess_methods)} preprocessing methods ({gpu_status})")
 
     debug_print("Initializing JetsonCamera...")
     start_time = time.time()
@@ -2353,10 +2360,20 @@ def main():
         action='store_true',
         help='Force center facelets to match expected colors (Y/W/B/G/O/R for up/down/front/back/left/right)'
     )
+    parser.add_argument(
+        '--nogpu',
+        action='store_true',
+        help='Disable GPU acceleration for preprocessing (use CPU only)'
+    )
     args = parser.parse_args()
 
-    # Validate preprocessing options
-    preprocessor = ImagePreprocessor()
+    # Validate preprocessing options - use GPU preprocessor by default
+    use_gpu = not args.nogpu
+    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
+    if use_gpu and preprocessor.is_gpu_enabled():
+        print("GPU acceleration: Enabled")
+    else:
+        print("GPU acceleration: Disabled")
     valid_methods = preprocessor.get_available_methods()
     valid_methods_normalized = [m.lower().replace('_', '-') for m in valid_methods]
 
@@ -2434,24 +2451,24 @@ def main():
 
         if choice == '1':
             single_face_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto,
-                            segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
+                            segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess, use_gpu=use_gpu)
         elif choice == '2':
             full_cube_mode(use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, display=args.display,
                           segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess,
                           animate=args.animate, all_seg_preprocess=args.all_segmenter_preprocess,
-                          all_cc_preprocess=args.all_cc_preprocess, force_centers=args.force_centers)
+                          all_cc_preprocess=args.all_cc_preprocess, force_centers=args.force_centers, use_gpu=use_gpu)
         elif choice == '3' and JETSON_AVAILABLE:
             camera_single_face_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
-                                   segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess)
+                                   segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess, use_gpu=use_gpu)
         elif choice == '4' and JETSON_AVAILABLE:
             camera_full_cube_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate,
                                  segmenter_preprocess=args.segmenter_preprocess, cc_preprocess=args.cc_preprocess,
                                  animate=args.animate, all_seg_preprocess=args.all_segmenter_preprocess,
-                                 all_cc_preprocess=args.all_cc_preprocess, force_centers=args.force_centers)
+                                 all_cc_preprocess=args.all_cc_preprocess, force_centers=args.force_centers, use_gpu=use_gpu)
         elif choice == '5' and JETSON_AVAILABLE:
-            camera_segmenter_preprocess_comparison_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate)
+            camera_segmenter_preprocess_comparison_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate, use_gpu=use_gpu)
         elif choice == '6' and JETSON_AVAILABLE:
-            camera_classifier_preprocess_comparison_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate)
+            camera_classifier_preprocess_comparison_mode(display=args.display, use_v2=args.v2, use_v3=args.v3, use_v4=args.v4, use_v5=args.v5, use_auto=args.auto, rotate=args.rotate, use_gpu=use_gpu)
         elif choice == 'q':
             print("\nGoodbye!")
             break
