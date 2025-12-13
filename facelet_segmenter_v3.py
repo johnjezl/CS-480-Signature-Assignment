@@ -81,6 +81,8 @@ class FaceletSegmenterV3:
         """
         self.output_size = output_size
         self.debug = debug
+        # Pre-create morphological kernel (thread-safe, immutable)
+        self._dilate_kernel = np.ones((3, 3), np.uint8)
 
     def segment(
         self,
@@ -470,35 +472,27 @@ class FaceletSegmenterV3:
         # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Try multiple preprocessing approaches
-        preprocessed = []
-
-        # Approach 1: Bilateral filter + Canny
+        # Edge detection approaches - combined efficiently
+        # Approach 1: Bilateral filter + Canny (edge-preserving smoothing)
         filtered = cv2.bilateralFilter(gray, 9, 75, 75)
         edges1 = cv2.Canny(filtered, 30, 100)
-        preprocessed.append(edges1)
 
         # Approach 2: Gaussian blur + adaptive threshold
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                        cv2.THRESH_BINARY, 11, 2)
         edges2 = cv2.Canny(thresh, 50, 150)
-        preprocessed.append(edges2)
 
         # Approach 3: CLAHE enhancement + Canny
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
         edges3 = cv2.Canny(enhanced, 40, 120)
-        preprocessed.append(edges3)
 
-        # Combine all edge images
-        combined_edges = np.zeros_like(edges1)
-        for edges in preprocessed:
-            combined_edges = cv2.bitwise_or(combined_edges, edges)
+        # Combine all edge images efficiently using numpy maximum
+        combined_edges = np.maximum(np.maximum(edges1, edges2), edges3)
 
-        # Dilate to connect nearby edges
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(combined_edges, kernel, iterations=1)
+        # Dilate to connect nearby edges (using pre-created kernel)
+        dilated = cv2.dilate(combined_edges, self._dilate_kernel, iterations=1)
 
         # Find contours
         contours, _ = cv2.findContours(dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)

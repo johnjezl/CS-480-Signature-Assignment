@@ -4,6 +4,12 @@ Cube Evaluation Module
 Contains reusable functions for evaluating Rubik's cube preprocessing combinations.
 Extracted from main.py to allow reuse by testing and metrics tools.
 
+Performance optimizations:
+- Batch CNN inference (54 facelets in one call)
+- Multiprocessing for CPU-bound segmentation/preprocessing
+- Early termination option
+- Vectorized facelet preprocessing
+
 Usage:
     from cube_evaluation import (
         evaluate_cube_result,
@@ -14,9 +20,10 @@ Usage:
 """
 
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import multiprocessing
 import time
+import os
 
 # Face names for the solver (in order of input)
 FACE_NAMES = ['up', 'down', 'front', 'back', 'left', 'right']
@@ -88,62 +95,38 @@ def evaluate_cube_result(cube_data, force_centers=False):
     return is_valid, total_confidence, details
 
 
-def evaluate_preprocessing_combination(face_images, facelets_by_face, segmenter, classifier,
-                                        preprocessor, seg_method, cc_method, force_centers=False,
-                                        cc_facelets_cache=None):
+def evaluate_preprocessing_combination_batch(facelets_by_face, classifier, force_centers=False):
     """
-    Evaluate a single preprocessing combination for all faces.
+    Evaluate a preprocessing combination using batch inference.
+
+    This is the optimized version that classifies all 54 facelets in one batch.
 
     Args:
-        face_images: Dict of face_name -> original image
         facelets_by_face: Dict of face_name -> facelets array (3,3,64,64,3)
-        segmenter: FaceletSegmenter instance
         classifier: FaceletColorClassifier instance
-        preprocessor: ImagePreprocessor instance
-        seg_method: Segmentation preprocessing method name (or None)
-        cc_method: Color classification preprocessing method name (or None)
         force_centers: If True, require centers to match expected colors
-        cc_facelets_cache: Optional cache of preprocessed facelets {cc_method -> {face_name -> facelets}}
 
     Returns:
         tuple: (cube_data, confidence_scores, is_valid, total_confidence, details)
     """
+    # Use batch inference for all faces at once
+    classifications = classifier.classify_multiple_faces(facelets_by_face)
+
     cube_data = {}
     confidence_scores = {}
     total_confidence = 0.0
 
-    # Check if we have cached preprocessed facelets for this seg_method + cc_method combo
-    # Cache structure: {seg_method -> {cc_method -> {face_name -> preprocessed_facelets}}}
-    use_cached_cc = (cc_facelets_cache is not None and
-                     seg_method in cc_facelets_cache and
-                     cc_method in cc_facelets_cache[seg_method])
-
     for face_name in FACE_NAMES:
-        if face_name not in facelets_by_face:
+        if face_name not in classifications:
             continue
 
-        facelets = facelets_by_face[face_name]
+        face_classifications = classifications[face_name]
         face_colors = []
         face_confidences = []
 
-        # Get cached preprocessed facelets if available
-        if use_cached_cc and face_name in cc_facelets_cache[seg_method][cc_method]:
-            cached_facelets = cc_facelets_cache[seg_method][cc_method][face_name]
-        else:
-            cached_facelets = None
-
         for row in range(3):
             for col in range(3):
-                if cached_facelets is not None:
-                    # Use cached preprocessed facelet
-                    facelet = cached_facelets[row, col]
-                else:
-                    facelet = facelets[row, col]
-                    # Apply CC preprocessing if specified
-                    if cc_method and cc_method.lower() != 'none':
-                        facelet = preprocessor.apply(cc_method, facelet)
-
-                color, conf = classifier.classify_facelet(facelet)
+                color, conf = face_classifications[row, col]
                 face_colors.append(COLOR_TO_LETTER.get(color, '?'))
                 face_confidences.append(conf)
                 total_confidence += conf
@@ -157,7 +140,7 @@ def evaluate_preprocessing_combination(face_images, facelets_by_face, segmenter,
 
 
 def _segment_face_with_preprocess(args):
-    """Helper function for threaded segmentation preprocessing."""
+    """Helper function for parallel segmentation preprocessing."""
     seg_m, face_name, image, preprocessor, segmenter = args
 
     # Apply segmentation preprocessing
@@ -171,30 +154,57 @@ def _segment_face_with_preprocess(args):
     return seg_m, face_name, facelets
 
 
-def _preprocess_facelets_for_cc(args):
-    """Helper function for threaded CC facelet preprocessing."""
-    cc_method, face_name, facelets, preprocessor = args
+def _preprocess_facelets_vectorized(facelets, preprocessor, cc_method):
+    """
+    Apply preprocessing to all 9 facelets of a face.
 
-    # Apply preprocessing to each facelet
+    Args:
+        facelets: Array (3, 3, 64, 64, 3)
+        preprocessor: ImagePreprocessor instance
+        cc_method: Preprocessing method name
+
+    Returns:
+        Preprocessed facelets array (3, 3, 64, 64, 3)
+    """
+    if not cc_method or cc_method.lower() == 'none':
+        return facelets
+
     processed = np.empty_like(facelets)
     for row in range(3):
         for col in range(3):
-            if cc_method and cc_method.lower() != 'none':
-                processed[row, col] = preprocessor.apply(cc_method, facelets[row, col])
-            else:
-                processed[row, col] = facelets[row, col]
+            processed[row, col] = preprocessor.apply(cc_method, facelets[row, col])
 
-    return cc_method, face_name, processed
+    return processed
 
 
-def _evaluate_cc_combination(args):
-    """Helper function for threaded CC preprocessing evaluation."""
-    (seg_m, cc_m, face_images, facelets_by_face, segmenter, classifier,
-     preprocessor, force_centers, cc_facelets_cache) = args
+def _preprocess_all_facelets_for_cc(seg_m, facelets_by_face, preprocessor, cc_methods):
+    """
+    Preprocess all facelets for all CC methods.
 
-    cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination(
-        face_images, facelets_by_face, segmenter, classifier,
-        preprocessor, seg_m, cc_m, force_centers, cc_facelets_cache
+    Returns:
+        Dict: {cc_method -> {face_name -> preprocessed_facelets}}
+    """
+    result = {}
+    for cc_m in cc_methods:
+        result[cc_m] = {}
+        for face_name, facelets in facelets_by_face.items():
+            result[cc_m][face_name] = _preprocess_facelets_vectorized(
+                facelets, preprocessor, cc_m
+            )
+    return result
+
+
+def _evaluate_single_combination(args):
+    """
+    Evaluate a single seg+cc combination.
+
+    This function is designed to be called in a worker process.
+    Note: classifier must be created fresh in each process if using multiprocessing.
+    """
+    seg_m, cc_m, facelets_by_face, force_centers, classifier = args
+
+    cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination_batch(
+        facelets_by_face, classifier, force_centers
     )
 
     return {
@@ -212,11 +222,12 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
                                           all_seg_preprocess=False, all_cc_preprocess=False,
                                           seg_method=None, cc_method=None, force_centers=False,
                                           max_workers=None, segmenter_name: str = 'unknown',
-                                          verbose=True, record_metrics=True):
+                                          verbose=True, record_metrics=True,
+                                          early_stop_confidence=None):
     """
     Find the best preprocessing combination that produces valid cube results.
 
-    Uses threading to parallelize preprocessing operations for better performance.
+    Uses batch inference and optional multiprocessing for better performance.
 
     Args:
         face_images: Dict of face_name -> original image
@@ -232,6 +243,7 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
         segmenter_name: Name of the segmenter algorithm for metrics tracking
         verbose: If True, print progress information
         record_metrics: If True, record metrics to PreprocessorMetrics
+        early_stop_confidence: If set, stop early when a result exceeds this threshold
 
     Returns:
         tuple: (best_cube_data, best_confidences, seg_method, cc_method, all_results)
@@ -244,42 +256,41 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
     cc_methods = methods if all_cc_preprocess else [cc_method or 'none']
 
     total_combos = len(seg_methods) * len(cc_methods)
-    use_threading = total_combos > 1  # Only use threading for multiple combinations
+    use_parallel = total_combos > 1
 
     if verbose:
         print(f"\nEvaluating {total_combos} preprocessing combinations", end='', flush=True)
 
-    # Progress dot printer - runs in background thread
+    # Progress indicator
     import threading
     stop_dots = threading.Event()
+    combo_count = [0]  # Use list for mutable reference in closure
 
-    def print_dots():
+    def print_progress():
         while not stop_dots.is_set():
-            if stop_dots.wait(2.0):  # Wait 2 seconds or until stopped
+            if stop_dots.wait(2.0):
                 break
             if verbose:
                 print(".", end='', flush=True)
 
-    dot_thread = threading.Thread(target=print_dots, daemon=True)
-    dot_thread.start()
+    progress_thread = threading.Thread(target=print_progress, daemon=True)
+    progress_thread.start()
 
     all_results = []
     valid_results = []
+    early_stopped = False
 
+    # STAGE 1: Segmentation preprocessing (parallel)
     seg_time_start = time.time()
-
-    # STAGE 1: Segmentation preprocessing (parallel by seg_method x face)
-    # For each seg_method, we need to process all 6 faces
     segmented_facelets = {}  # {seg_method -> {face_name -> facelets}}
 
-    if use_threading:
-        # Build all segmentation tasks
+    if use_parallel and len(seg_methods) > 1:
+        # Use threading for segmentation (OpenCV releases GIL)
         seg_tasks = []
         for seg_m in seg_methods:
             for face_name, image in face_images.items():
                 seg_tasks.append((seg_m, face_name, image, preprocessor, segmenter))
 
-        # Execute segmentation in parallel
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_segment_face_with_preprocess, task) for task in seg_tasks]
 
@@ -289,77 +300,104 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
                     segmented_facelets[seg_m] = {}
                 segmented_facelets[seg_m][face_name] = facelets
     else:
-        # Single combination - no threading
-        seg_m = seg_methods[0]
-        segmented_facelets[seg_m] = {}
-        for face_name, image in face_images.items():
-            _, _, facelets = _segment_face_with_preprocess(
-                (seg_m, face_name, image, preprocessor, segmenter)
-            )
-            segmented_facelets[seg_m][face_name] = facelets
+        # Single seg method or sequential processing
+        for seg_m in seg_methods:
+            segmented_facelets[seg_m] = {}
+            for face_name, image in face_images.items():
+                _, _, facelets = _segment_face_with_preprocess(
+                    (seg_m, face_name, image, preprocessor, segmenter)
+                )
+                segmented_facelets[seg_m][face_name] = facelets
 
     seg_time = time.time() - seg_time_start
 
-    # STAGE 2: Precompute all CC preprocessed facelets (parallel)
+    # STAGE 2: CC preprocessing and evaluation
     cc_time_start = time.time()
 
-    # Structure: {seg_method -> {cc_method -> {face_name -> preprocessed_facelets}}}
-    cc_facelets_cache = {}
-
-    if use_threading and len(cc_methods) > 1:
-        # Build all CC preprocessing tasks
-        cc_tasks = []
-        for seg_m, facelets_by_face in segmented_facelets.items():
-            for cc_m in cc_methods:
-                for face_name, facelets in facelets_by_face.items():
-                    cc_tasks.append((cc_m, face_name, facelets, preprocessor, seg_m))
-
-        # Execute CC preprocessing in parallel
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(lambda t: (t[4], *_preprocess_facelets_for_cc(t[:4])), task)
-                       for task in cc_tasks]
-
-            for future in as_completed(futures):
-                seg_m, cc_m, face_name, processed_facelets = future.result()
-                if seg_m not in cc_facelets_cache:
-                    cc_facelets_cache[seg_m] = {}
-                if cc_m not in cc_facelets_cache[seg_m]:
-                    cc_facelets_cache[seg_m][cc_m] = {}
-                cc_facelets_cache[seg_m][cc_m][face_name] = processed_facelets
-
-    # STAGE 3: Evaluate all combinations (parallel)
-    eval_tasks = []
+    # For each seg method, preprocess all facelets for all cc methods, then evaluate
     for seg_m in seg_methods:
+        if early_stopped:
+            break
+
         facelets_by_face = segmented_facelets[seg_m]
-        for cc_m in cc_methods:
-            eval_tasks.append((seg_m, cc_m, face_images, facelets_by_face,
-                              segmenter, classifier, preprocessor, force_centers, cc_facelets_cache))
 
-    if use_threading:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_evaluate_cc_combination, task) for task in eval_tasks]
+        # Preprocess facelets for all CC methods
+        if use_parallel and len(cc_methods) > 1:
+            # Precompute all CC preprocessed facelets
+            cc_preprocessed = _preprocess_all_facelets_for_cc(
+                seg_m, facelets_by_face, preprocessor, cc_methods
+            )
 
-            for future in as_completed(futures):
-                result = future.result()
+            # Evaluate all CC methods
+            for cc_m in cc_methods:
+                if early_stopped:
+                    break
+
+                preprocessed_facelets = cc_preprocessed[cc_m]
+
+                # Use batch inference
+                cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination_batch(
+                    preprocessed_facelets, classifier, force_centers
+                )
+
+                result = {
+                    'seg_method': seg_m,
+                    'cc_method': cc_m,
+                    'cube_data': cube_data,
+                    'confidence_scores': conf_scores,
+                    'is_valid': is_valid,
+                    'total_confidence': total_conf,
+                    'details': details
+                }
+
                 all_results.append(result)
-                if result['is_valid']:
+                if is_valid:
                     valid_results.append(result)
-    else:
-        # Single combination
-        result = _evaluate_cc_combination(eval_tasks[0])
-        all_results.append(result)
-        if result['is_valid']:
-            valid_results.append(result)
+
+                    # Check for early stopping
+                    if early_stop_confidence and total_conf >= early_stop_confidence:
+                        early_stopped = True
+                        if verbose:
+                            print(f" [early stop at {total_conf:.0f}]", end='')
+                        break
+
+                combo_count[0] += 1
+        else:
+            # Single CC method
+            cc_m = cc_methods[0]
+            preprocessed_facelets = {
+                face_name: _preprocess_facelets_vectorized(facelets, preprocessor, cc_m)
+                for face_name, facelets in facelets_by_face.items()
+            }
+
+            cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination_batch(
+                preprocessed_facelets, classifier, force_centers
+            )
+
+            result = {
+                'seg_method': seg_m,
+                'cc_method': cc_m,
+                'cube_data': cube_data,
+                'confidence_scores': conf_scores,
+                'is_valid': is_valid,
+                'total_confidence': total_conf,
+                'details': details
+            }
+
+            all_results.append(result)
+            if is_valid:
+                valid_results.append(result)
 
     cc_time = time.time() - cc_time_start
 
-    # Stop the dot printer and finish the line
+    # Stop progress indicator
     stop_dots.set()
-    dot_thread.join(timeout=0.1)
+    progress_thread.join(timeout=0.1)
     if verbose:
-        print(" done", flush=True)
+        status = " done" if not early_stopped else ""
+        print(status, flush=True)
 
-    # Record metrics for ALL evaluated combinations (not just the winner)
+    # Record metrics for ALL evaluated combinations
     if record_metrics and all_results:
         from PreprocessorMetrics import get_metrics
         metrics = get_metrics()
@@ -368,7 +406,6 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
     if not valid_results:
         if verbose:
             print("  No valid preprocessing combinations found!")
-            # Show the best invalid result
             if all_results:
                 best_invalid = max(all_results, key=lambda r: r['total_confidence'])
                 print(f"  Best invalid result: seg={best_invalid['seg_method']}, cc={best_invalid['cc_method']}")
@@ -414,7 +451,6 @@ def load_face_images(directory, face_names=None):
         Dict of face_name -> image (BGR numpy array), or None if not all found
     """
     import cv2
-    import os
 
     if face_names is None:
         face_names = FACE_NAMES
@@ -443,7 +479,8 @@ def load_face_images(directory, face_names=None):
 
 def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
                                segmenter_name: str = 'unknown', force_centers=False,
-                               verbose=True, record_metrics=True):
+                               verbose=True, record_metrics=True,
+                               early_stop_confidence=None):
     """
     Evaluate ALL preprocessing combinations and return results.
 
@@ -459,6 +496,7 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
         force_centers: If True, require centers to match expected colors
         verbose: If True, print progress
         record_metrics: If True, record to PreprocessorMetrics
+        early_stop_confidence: If set, stop early when a result exceeds this
 
     Returns:
         tuple: (best_result, all_results)
@@ -472,7 +510,8 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
         force_centers=force_centers,
         segmenter_name=segmenter_name,
         verbose=verbose,
-        record_metrics=record_metrics
+        record_metrics=record_metrics,
+        early_stop_confidence=early_stop_confidence
     )
 
     if best_cube_data is not None:
@@ -487,3 +526,62 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
         best_result = None
 
     return best_result, all_results
+
+
+# Legacy compatibility functions
+def evaluate_preprocessing_combination(face_images, facelets_by_face, segmenter, classifier,
+                                        preprocessor, seg_method, cc_method, force_centers=False,
+                                        cc_facelets_cache=None):
+    """
+    Legacy function for evaluating a single preprocessing combination.
+
+    For better performance, use evaluate_preprocessing_combination_batch directly.
+    """
+    # Apply CC preprocessing if needed
+    if cc_method and cc_method.lower() != 'none':
+        preprocessed = {}
+        for face_name, facelets in facelets_by_face.items():
+            preprocessed[face_name] = _preprocess_facelets_vectorized(
+                facelets, preprocessor, cc_method
+            )
+    else:
+        preprocessed = facelets_by_face
+
+    return evaluate_preprocessing_combination_batch(preprocessed, classifier, force_centers)
+
+
+def _preprocess_facelets_for_cc(args):
+    """Legacy helper function for threaded CC facelet preprocessing."""
+    cc_method, face_name, facelets, preprocessor = args
+    processed = _preprocess_facelets_vectorized(facelets, preprocessor, cc_method)
+    return cc_method, face_name, processed
+
+
+def _evaluate_cc_combination(args):
+    """Legacy helper function for threaded CC preprocessing evaluation."""
+    (seg_m, cc_m, face_images, facelets_by_face, segmenter, classifier,
+     preprocessor, force_centers, cc_facelets_cache) = args
+
+    # Apply CC preprocessing
+    if cc_m and cc_m.lower() != 'none':
+        preprocessed = {}
+        for face_name, facelets in facelets_by_face.items():
+            preprocessed[face_name] = _preprocess_facelets_vectorized(
+                facelets, preprocessor, cc_m
+            )
+    else:
+        preprocessed = facelets_by_face
+
+    cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination_batch(
+        preprocessed, classifier, force_centers
+    )
+
+    return {
+        'seg_method': seg_m,
+        'cc_method': cc_m,
+        'cube_data': cube_data,
+        'confidence_scores': conf_scores,
+        'is_valid': is_valid,
+        'total_confidence': total_conf,
+        'details': details
+    }

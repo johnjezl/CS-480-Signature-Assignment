@@ -47,14 +47,16 @@ class FaceletSegmenterV5:
         facelets = segmenter.segment(image)
     """
 
-    def __init__(self, output_size: int = 64):
+    def __init__(self, output_size: int = 64, debug: bool = False):
         """
         Initialize the segmenter.
 
         Args:
             output_size: Size of output facelet images (default 64x64)
+            debug: If True, print debug information during processing
         """
         self.output_size = output_size
+        self.debug = debug
         self.work_width = 800  # Standard width for processing
 
     def segment(
@@ -78,7 +80,8 @@ class FaceletSegmenterV5:
         ordered_boxes, work_image, scale = self._detect_grid(image)
 
         if ordered_boxes is None or len(ordered_boxes) < 9:
-            print(f"     [V5] Warning: Only detected {len(ordered_boxes) if ordered_boxes else 0} facelets, falling back to grid split")
+            if self.debug:
+                print(f"     [V5] Warning: Only detected {len(ordered_boxes) if ordered_boxes else 0} facelets, falling back to grid split")
             return self._fallback_grid_split(image)
 
         # Extract facelets from detected boxes
@@ -164,7 +167,8 @@ class FaceletSegmenterV5:
         boxes = self._dedup_boxes(boxes, min_dist=20)
 
         if len(boxes) < 9:
-            print(f"     [V5] Not enough squares: {len(boxes)}")
+            if self.debug:
+                print(f"     [V5] Not enough squares: {len(boxes)}")
             return None, work, scale
 
         if len(boxes) > 9:
@@ -193,7 +197,7 @@ class FaceletSegmenterV5:
         # Trim to 9 in case of any issues
         ordered_boxes = ordered_boxes[:9]
 
-        if len(ordered_boxes) == 9:
+        if len(ordered_boxes) == 9 and self.debug:
             print(f"     [V5] Detected 9 facelets successfully")
 
         return ordered_boxes, work, scale

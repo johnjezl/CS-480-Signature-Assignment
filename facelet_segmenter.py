@@ -39,14 +39,16 @@ class FaceletSegmenter:
         facelets = segmenter.segment(image, bbox=BoundingBox(100, 50, 300, 300))
     """
 
-    def __init__(self, output_size: int = 64):
+    def __init__(self, output_size: int = 64, debug: bool = False):
         """
         Initialize the segmenter.
 
         Args:
             output_size: Size of output facelet images (default 64x64)
+            debug: If True, print debug information during processing
         """
         self.output_size = output_size
+        self.debug = debug
 
     def segment(
         self,
@@ -338,7 +340,8 @@ class FaceletSegmenter:
                     new_y = height - expanded_size
 
                 best_bbox = BoundingBox(new_x, new_y, expanded_size, expanded_size, rotation)
-                print(f"     [BBox] Set rotation: {rotation:.2f}°, expanded {original_size} -> {expanded_size}")
+                if self.debug:
+                    print(f"     [BBox] Set rotation: {rotation:.2f}°, expanded {original_size} -> {expanded_size}")
 
         return best_bbox
 
@@ -925,14 +928,17 @@ class FaceletSegmenter:
         if 2.0 < abs(detected_angle) < 8.0:
             detected_angle *= 2.2  # Scale up moderate rotations
 
-        print(f"     [Rotation] Detected angle: {detected_angle:.2f}° from {len(angles)} lines")
+        if self.debug:
+            print(f"     [Rotation] Detected angle: {detected_angle:.2f}° from {len(angles)} lines")
 
         # Only correct if rotation is significant (> 0.5 degree) but not too large
         if abs(detected_angle) < 0.5 or abs(detected_angle) > 15:
-            print(f"     [Rotation] Skipping (threshold: 0.5-15°)")
+            if self.debug:
+                print(f"     [Rotation] Skipping (threshold: 0.5-15°)")
             return face_region
 
-        print(f"     [Rotation] Applying {detected_angle:.2f}° correction")
+        if self.debug:
+            print(f"     [Rotation] Applying {detected_angle:.2f}° correction")
 
         # Rotate around center
         center = (width // 2, height // 2)

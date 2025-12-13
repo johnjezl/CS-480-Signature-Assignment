@@ -4,6 +4,11 @@ Image Preprocessor for Rubik's Cube Detection
 Provides various image preprocessing techniques that can be applied
 before segmentation or color classification to improve accuracy.
 
+Performance optimizations:
+- Pre-computed lookup tables for gamma correction
+- Cached CLAHE objects
+- Color space conversion caching
+
 Usage:
     preprocessor = ImagePreprocessor()
 
@@ -16,20 +21,66 @@ Usage:
 
 import cv2
 import numpy as np
-from typing import Dict, Callable, List, Optional
+from typing import Dict, Callable, List, Optional, Tuple
 
 
 class ImagePreprocessor:
     """
     Image preprocessor with multiple techniques for improving
     cube detection and color classification.
+
+    Optimized with pre-computed lookup tables and cached objects.
     """
 
     def __init__(self):
         """Initialize the preprocessor with all available methods."""
         self._methods: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
         self._descriptions: Dict[str, str] = {}
+
+        # Pre-compute lookup tables for gamma correction
+        self._gamma_brighten_lut = self._create_gamma_lut(0.7)
+        self._gamma_darken_lut = self._create_gamma_lut(1.5)
+
+        # Cache CLAHE objects (they're expensive to create)
+        self._clahe_default = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+        # Color space conversion cache (per-image)
+        self._cache_image_id = None
+        self._cache_hsv = None
+        self._cache_lab = None
+
         self._register_methods()
+
+    def _create_gamma_lut(self, gamma: float) -> np.ndarray:
+        """Create a lookup table for gamma correction."""
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255
+                         for i in np.arange(256)]).astype(np.uint8)
+        return table
+
+    def _get_hsv_cached(self, img: np.ndarray) -> np.ndarray:
+        """Get HSV conversion, using cache if same image."""
+        img_id = id(img)
+        if self._cache_image_id != img_id or self._cache_hsv is None:
+            self._cache_image_id = img_id
+            self._cache_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            self._cache_lab = None  # Invalidate LAB cache
+        return self._cache_hsv.copy()
+
+    def _get_lab_cached(self, img: np.ndarray) -> np.ndarray:
+        """Get LAB conversion, using cache if same image."""
+        img_id = id(img)
+        if self._cache_image_id != img_id or self._cache_lab is None:
+            self._cache_image_id = img_id
+            self._cache_lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            self._cache_hsv = None  # Invalidate HSV cache
+        return self._cache_lab.copy()
+
+    def clear_cache(self):
+        """Clear the color space conversion cache."""
+        self._cache_image_id = None
+        self._cache_hsv = None
+        self._cache_lab = None
 
     def _register_methods(self):
         """Register all available preprocessing methods."""
@@ -74,7 +125,7 @@ class ImagePreprocessor:
         self._register("white-balance", self._white_balance,
                       "Gray world white balance correction")
 
-        # Gamma correction
+        # Gamma correction (using pre-computed LUTs)
         self._register("gamma-bright", self._gamma_brighten,
                       "Gamma correction to brighten (gamma=0.7)")
         self._register("gamma-dark", self._gamma_darken,
@@ -140,6 +191,26 @@ class ImagePreprocessor:
 
         return self._methods[name](image)
 
+    def apply_batch(self, method_name: str, images: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Apply a preprocessing method to multiple images.
+
+        Args:
+            method_name: Name of the preprocessing method
+            images: List of input BGR images
+
+        Returns:
+            List of preprocessed BGR images
+        """
+        name = method_name.lower().replace('_', '-')
+        if name not in self._methods:
+            available = ", ".join(sorted(self._methods.keys()))
+            raise ValueError(f"Unknown preprocessing method: '{method_name}'. "
+                           f"Available methods: {available}")
+
+        method = self._methods[name]
+        return [method(img) for img in images]
+
     def get_available_methods(self) -> List[str]:
         """Get list of available preprocessing method names."""
         return sorted(self._methods.keys())
@@ -167,8 +238,7 @@ class ImagePreprocessor:
         """CLAHE on LAB L-channel."""
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l = clahe.apply(l)
+        l = self._clahe_default.apply(l)
         lab = cv2.merge([l, a, b])
         return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
@@ -176,8 +246,7 @@ class ImagePreprocessor:
         """CLAHE on HSV V-channel."""
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        v = clahe.apply(v)
+        v = self._clahe_default.apply(v)
         hsv = cv2.merge([h, s, v])
         return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
@@ -235,20 +304,12 @@ class ImagePreprocessor:
         return result.astype(np.uint8)
 
     def _gamma_brighten(self, img: np.ndarray) -> np.ndarray:
-        """Gamma correction to brighten."""
-        gamma = 0.7
-        inv_gamma = 1.0 / gamma
-        table = np.array([((i / 255.0) ** inv_gamma) * 255
-                         for i in np.arange(256)]).astype(np.uint8)
-        return cv2.LUT(img, table)
+        """Gamma correction to brighten (using pre-computed LUT)."""
+        return cv2.LUT(img, self._gamma_brighten_lut)
 
     def _gamma_darken(self, img: np.ndarray) -> np.ndarray:
-        """Gamma correction to darken."""
-        gamma = 1.5
-        inv_gamma = 1.0 / gamma
-        table = np.array([((i / 255.0) ** inv_gamma) * 255
-                         for i in np.arange(256)]).astype(np.uint8)
-        return cv2.LUT(img, table)
+        """Gamma correction to darken (using pre-computed LUT)."""
+        return cv2.LUT(img, self._gamma_darken_lut)
 
     def _median_blur(self, img: np.ndarray) -> np.ndarray:
         """Median blur."""

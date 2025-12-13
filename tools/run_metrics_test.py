@@ -91,8 +91,21 @@ def discover_image_sets():
     return available
 
 
+def format_time_remaining(seconds):
+    """Format seconds into human readable time."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        mins = seconds / 60
+        return f"{mins:.1f}m"
+    else:
+        hours = seconds / 3600
+        return f"{hours:.1f}h"
+
+
 def run_test_for_image_set(image_set_path, image_set_name, segmenter_names, classifier,
-                           preprocessor, use_gpu=True, verbose=True):
+                           preprocessor, use_gpu=True, verbose=True,
+                           global_progress=None):
     """
     Run all segmenter and preprocessing combinations for a single image set.
 
@@ -104,6 +117,7 @@ def run_test_for_image_set(image_set_path, image_set_name, segmenter_names, clas
         preprocessor: ImagePreprocessor instance
         use_gpu: Whether to use GPU preprocessor if available
         verbose: Print progress information
+        global_progress: Dict with global progress tracking (completed, total, start_time, times)
 
     Returns:
         Dict with results summary
@@ -133,16 +147,33 @@ def run_test_for_image_set(image_set_path, image_set_name, segmenter_names, clas
         'end_time': None
     }
 
-    for seg_name in segmenter_names:
+    for seg_idx, seg_name in enumerate(segmenter_names):
+        # Calculate and display time estimate
+        if global_progress:
+            completed = global_progress['completed']
+            total = global_progress['total']
+            elapsed_total = time.time() - global_progress['start_time']
+
+            if completed > 0:
+                avg_time = elapsed_total / completed
+                remaining = (total - completed) * avg_time
+                eta_str = format_time_remaining(remaining)
+                pct = (completed / total) * 100
+                print(f"\n>>> Progress: {completed}/{total} ({pct:.1f}%) | Elapsed: {format_time_remaining(elapsed_total)} | ETA: {eta_str}")
+            else:
+                print(f"\n>>> Progress: {completed}/{total} | Starting...")
+
         if verbose:
             print(f"\n{'-' * 80}")
-            print(f"  Testing segmenter: {seg_name}")
+            print(f"  Testing segmenter: {seg_name} ({seg_idx + 1}/{len(segmenter_names)})")
             print('-' * 80)
 
         try:
             segmenter = Segmenter.create(seg_name)
         except Exception as e:
             print(f"  ERROR: Could not create segmenter '{seg_name}': {e}")
+            if global_progress:
+                global_progress['completed'] += 1
             continue
 
         start_time = time.time()
@@ -157,6 +188,11 @@ def run_test_for_image_set(image_set_path, image_set_name, segmenter_names, clas
         )
 
         elapsed = time.time() - start_time
+
+        # Update global progress
+        if global_progress:
+            global_progress['completed'] += 1
+            global_progress['times'].append(elapsed)
 
         # Collect stats
         valid_count = sum(1 for r in all_results if r['is_valid'])
@@ -339,6 +375,18 @@ Examples:
     all_summaries = []
     overall_start = time.time()
 
+    # Initialize global progress tracking
+    # Total units = image_sets * segmenters (each segmenter run is one unit)
+    total_units = len(image_sets_to_test) * len(segmenters_to_test)
+    global_progress = {
+        'completed': 0,
+        'total': total_units,
+        'start_time': overall_start,
+        'times': []
+    }
+
+    print(f"\n>>> Starting test run: {total_units} segmenter evaluations total")
+
     for set_key, set_info in image_sets_to_test.items():
         summary = run_test_for_image_set(
             set_info['path'],
@@ -347,7 +395,8 @@ Examples:
             classifier,
             preprocessor,
             use_gpu=use_gpu,
-            verbose=not args.quiet
+            verbose=not args.quiet,
+            global_progress=global_progress
         )
         all_summaries.append(summary)
 
