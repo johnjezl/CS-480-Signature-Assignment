@@ -6,11 +6,12 @@ This script installs all required dependencies for the Rubik's Cube Solver proje
 It automatically detects the platform and installs the appropriate packages.
 
 Usage:
-    python install_dependencies.py [--training] [--jetson]
+    python install_dependencies.py [--training] [--jetson] [--skip-pytorch]
 
 Options:
-    --training    Install additional packages needed for model training
-    --jetson      Skip PyTorch installation (already included in JetPack)
+    --training      Install additional packages needed for model training
+    --jetson        Install Jetson-specific PyTorch with CUDA support
+    --skip-pytorch  Skip PyTorch installation entirely
 """
 
 import subprocess
@@ -58,6 +59,37 @@ def is_jetson():
     return False
 
 
+def get_jetpack_version():
+    """Get the JetPack/L4T version from the Jetson system."""
+    try:
+        with open('/etc/nv_tegra_release', 'r') as f:
+            content = f.read()
+            # Parse "# R36 (release), REVISION: 4.7, ..."
+            if 'R36' in content:
+                return 6  # JetPack 6.x
+            elif 'R35' in content:
+                return 5  # JetPack 5.x
+            elif 'R34' in content or 'R32' in content:
+                return 4  # JetPack 4.x
+    except (FileNotFoundError, PermissionError):
+        pass
+    return None
+
+
+# Jetson PyTorch wheel URLs by JetPack version
+# Updated December 2024 - check NVIDIA forums for latest:
+# https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048
+# NOTE: JetPack 6.2+ (L4T R36.4+) may have library compatibility issues with these wheels.
+#       If you encounter libcudnn or libcusparseLt errors, use CPU PyTorch instead:
+#       pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+JETSON_PYTORCH_URLS = {
+    # JetPack 6.1 (L4T R36.3)
+    6: "https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl",
+    # JetPack 5.1.2 (L4T R35.4)
+    5: "https://developer.download.nvidia.com/compute/redist/jp/v512/pytorch/torch-2.1.0a0+41361538.nv23.06-cp38-cp38-linux_aarch64.whl",
+}
+
+
 def get_torch_install_command():
     """Get the appropriate PyTorch installation command for the platform."""
     system = platform.system()
@@ -81,14 +113,65 @@ def get_torch_install_command():
         ]
 
 
-def install_pytorch(skip_jetson=False):
+def install_jetson_pytorch():
+    """Install PyTorch with CUDA support for Jetson platforms."""
+    print("\n" + "=" * 50)
+    print("  Installing PyTorch for Jetson (with CUDA)")
+    print("=" * 50)
+
+    jetpack_version = get_jetpack_version()
+    if jetpack_version is None:
+        print("\n  [WARNING] Could not detect JetPack version")
+        print("  Please install PyTorch manually from:")
+        print("  https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048")
+        return False
+
+    print(f"\n  Detected JetPack {jetpack_version}.x")
+
+    if jetpack_version not in JETSON_PYTORCH_URLS:
+        print(f"\n  [ERROR] No PyTorch wheel URL configured for JetPack {jetpack_version}")
+        print("  Please check NVIDIA forums for the correct wheel:")
+        print("  https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048")
+        return False
+
+    wheel_url = JETSON_PYTORCH_URLS[jetpack_version]
+    print(f"\n  Installing from: {wheel_url}")
+
+    try:
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "--no-cache", wheel_url
+        ])
+        print("\n  [OK] PyTorch for Jetson installed successfully")
+
+        # Verify CUDA is available
+        try:
+            import torch
+            if torch.cuda.is_available():
+                print(f"  [OK] CUDA is available! Device: {torch.cuda.get_device_name(0)}")
+            else:
+                print("  [WARNING] PyTorch installed but CUDA not available")
+                print("  This may indicate a driver or library mismatch")
+        except Exception as e:
+            print(f"  [WARNING] Could not verify CUDA: {e}")
+
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"\n  [ERROR] Failed to install PyTorch: {e}")
+        print("\n  Please install manually:")
+        print(f"  pip3 install --no-cache {wheel_url}")
+        return False
+
+
+def install_pytorch(for_jetson=False, skip=False):
     """Install PyTorch based on platform."""
-    if skip_jetson or is_jetson():
+    if skip:
         print("\n" + "=" * 50)
-        print("  Jetson detected - Skipping PyTorch installation")
-        print("  (PyTorch is pre-installed with JetPack)")
+        print("  Skipping PyTorch installation (--skip-pytorch)")
         print("=" * 50)
         return True
+
+    if for_jetson:
+        return install_jetson_pytorch()
 
     print("\n" + "=" * 50)
     print("  Installing PyTorch")
@@ -144,7 +227,12 @@ def main():
     parser.add_argument(
         "--jetson",
         action="store_true",
-        help="Skip PyTorch installation (for Jetson with JetPack)"
+        help="Install Jetson-specific PyTorch with CUDA support (auto-detected)"
+    )
+    parser.add_argument(
+        "--skip-pytorch",
+        action="store_true",
+        help="Skip PyTorch installation entirely"
     )
     args = parser.parse_args()
 
@@ -158,7 +246,11 @@ def main():
     jetson_detected = is_jetson()
     if jetson_detected:
         print("Jetson platform detected!")
-        args.jetson = True
+        if not args.skip_pytorch:
+            args.jetson = True
+            jetpack_ver = get_jetpack_version()
+            if jetpack_ver:
+                print(f"JetPack version: {jetpack_ver}.x")
 
     # Upgrade pip first
     print("\n" + "=" * 50)
@@ -177,7 +269,7 @@ def main():
         sys.exit(1)
 
     # PyTorch
-    if not install_pytorch(skip_jetson=args.jetson):
+    if not install_pytorch(for_jetson=args.jetson, skip=args.skip_pytorch):
         print("\nPyTorch installation failed!")
         print("Continuing with other packages...")
 

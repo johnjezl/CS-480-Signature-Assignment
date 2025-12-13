@@ -54,6 +54,12 @@ from ImagePreprocessor import ImagePreprocessor
 from CubeRenderer import CubeRenderer, CubeState
 from CubeOrientationCorrector import CubeOrientationCorrector
 from PreprocessorMetrics import PreprocessorMetrics, get_metrics
+from DisplayManager import DisplayManager, get_platform
+from cube_evaluation import (
+    evaluate_cube_result, evaluate_preprocessing_combination,
+    FACE_NAMES, FACE_DISPLAY_NAMES, COLOR_TO_LETTER, EXPECTED_CENTERS,
+    _segment_face_with_preprocess, _preprocess_facelets_for_cc, _evaluate_cc_combination
+)
 
 # Try to import GPU preprocessor (requires VPI on Jetson)
 try:
@@ -65,7 +71,7 @@ except ImportError:
 
 # Try to import Jetson camera module
 try:
-    from JetsonCamera import JetsonCamera, is_jetson, display_image, display_images_grid, debug_print, suppress_output
+    from JetsonCamera import JetsonCamera, is_jetson, debug_print, suppress_output
     JETSON_AVAILABLE = is_jetson()
 except ImportError:
     JETSON_AVAILABLE = False
@@ -73,12 +79,6 @@ except ImportError:
 
     def is_jetson():
         return False
-
-    def display_image(image, window_name="Image", wait_key=True):
-        pass
-
-    def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3):
-        pass
 
     def debug_print(msg):
         pass
@@ -88,6 +88,17 @@ except ImportError:
     def suppress_output():
         yield
 
+# Global display manager instance (initialized in main())
+_display_manager: DisplayManager = None
+
+
+def get_display_manager() -> DisplayManager:
+    """Get the global display manager instance."""
+    global _display_manager
+    if _display_manager is None:
+        _display_manager = DisplayManager()
+    return _display_manager
+
 
 # Color abbreviation map
 COLOR_ABBREV = {
@@ -95,11 +106,8 @@ COLOR_ABBREV = {
     'orange': 'O', 'blue': 'B', 'green': 'G'
 }
 
-# Face names for the solver (in order of input)
-FACE_NAMES = ['up', 'down', 'front', 'back', 'left', 'right']
-FACE_DISPLAY_NAMES = ['Up (Yellow)', 'Down (White)', 'Front (Blue)',
-                      'Back (Green)', 'Left (Orange)', 'Right (Red)']
-
+# Note: FACE_NAMES, FACE_DISPLAY_NAMES, COLOR_TO_LETTER, EXPECTED_CENTERS
+# are now imported from cube_evaluation module
 
 # ANSI color codes for terminal cube visualization
 class TermColors:
@@ -141,6 +149,10 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
         frames_per_move: Number of frames per move animation
     """
     import math
+    import select
+    import sys
+
+    dm = get_display_manager()
 
     # Map cube_data face names to CubeState face names
     face_map = {'up': 'U', 'down': 'D', 'front': 'F', 'back': 'B', 'right': 'R', 'left': 'L'}
@@ -155,29 +167,14 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 row, col = i // 3, i % 3
                 cube.faces[face_key][row, col] = color_map.get(colors[i], 'W')
 
-    # Try to get screen dimensions for fullscreen rendering
-    try:
-        # Try to get screen size - this works on systems with xrandr
-        import subprocess
-        result = subprocess.run(['xrandr'], capture_output=True, text=True)
-        for line in result.stdout.split('\n'):
-            if '*' in line:  # Current resolution has asterisk
-                parts = line.split()[0].split('x')
-                screen_width, screen_height = int(parts[0]), int(parts[1])
-                break
-        else:
-            screen_width, screen_height = 1920, 1080  # Default fallback
-    except Exception:
-        screen_width, screen_height = 1920, 1080  # Default fallback
+    # Get screen dimensions using DisplayManager's cross-platform method
+    screen_width, screen_height = dm.get_screen_size()
 
     renderer = CubeRenderer(screen_width, screen_height)
     window_name = "Solution Animation"
 
-    # Create fullscreen window - try multiple methods for compatibility
-    cv2.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
-    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.moveWindow(window_name, 0, 0)
-    cv2.resizeWindow(window_name, screen_width, screen_height)
+    # Create fullscreen window using DisplayManager
+    dm.create_fullscreen_window(window_name)
 
     print(f"\nAnimating {len(moves_list)} moves...")
     print("Press 'q' to skip animation, any other key to pause/resume")
@@ -205,13 +202,13 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                         (255, 255, 255), 2, cv2.LINE_AA)
 
-            cv2.imshow(window_name, img)
+            dm.imshow(window_name, img)
 
-            key = cv2.waitKey(delay_ms if not paused else 0)
+            key = dm.waitKey(delay_ms if not paused else 0)
             if key == ord('q'):
                 print("\n  Animation skipped.")
-                cv2.destroyAllWindows()
-                cv2.waitKey(1)
+                dm.destroyAllWindows()
+                dm.waitKey(1)
                 return
             elif key != -1:
                 paused = not paused
@@ -228,220 +225,42 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
     cv2.putText(final_img, "Press any key to continue",
                 (screen_width // 2 - 200, screen_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                 (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.imshow(window_name, final_img)
+    dm.imshow(window_name, final_img)
 
     # Wait for key using non-blocking approach to avoid input freeze
-    import select
-    import sys
     while True:
-        key = cv2.waitKey(100)
+        key = dm.waitKey(100)
         if key != -1:
             break
         # Also check for Enter key in terminal
-        if select.select([sys.stdin], [], [], 0)[0]:
-            sys.stdin.readline()
-            break
+        try:
+            if select.select([sys.stdin], [], [], 0)[0]:
+                sys.stdin.readline()
+                break
+        except (TypeError, ValueError):
+            # select doesn't work with stdin on Windows
+            pass
 
     # Properly clean up OpenCV windows to prevent input freeze
-    cv2.destroyAllWindows()
+    dm.destroyAllWindows()
     # Process pending events multiple times to ensure cleanup
     for _ in range(10):
-        cv2.waitKey(1)
+        dm.waitKey(1)
 
-    # Flush stdin to clear any buffered input
-    import termios
+    # Flush stdin to clear any buffered input (Unix only)
     try:
+        import termios
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
 
 
-# Expected center colors for each face (standard cube orientation)
-EXPECTED_CENTERS = {
-    'up': 'Y',      # Yellow
-    'down': 'W',    # White
-    'front': 'B',   # Blue
-    'back': 'G',    # Green
-    'left': 'O',    # Orange
-    'right': 'R',   # Red
-}
 
-# Color name to letter mapping
-COLOR_TO_LETTER = {
-    'white': 'W', 'yellow': 'Y', 'red': 'R',
-    'orange': 'O', 'blue': 'B', 'green': 'G'
-}
-
-
-def evaluate_cube_result(cube_data, force_centers=False):
-    """
-    Evaluate a cube classification result.
-
-    Args:
-        cube_data: Dict with face colors {'up': ['W','W',...], 'down': [...], ...}
-        force_centers: If True, check that centers match expected colors
-
-    Returns:
-        tuple: (is_valid, score, details)
-            - is_valid: True if color counts are all 9 (and centers match if forced)
-            - score: Total confidence score (higher is better)
-            - details: Dict with evaluation details
-    """
-    color_counts = {'W': 0, 'Y': 0, 'R': 0, 'O': 0, 'B': 0, 'G': 0}
-    total_confidence = 0
-    centers_match = True
-    center_details = {}
-
-    for face_name, colors in cube_data.items():
-        for color in colors:
-            if color in color_counts:
-                color_counts[color] += 1
-
-        # Check center (index 4 in a 3x3 face)
-        center_color = colors[4] if len(colors) > 4 else None
-        expected_center = EXPECTED_CENTERS.get(face_name)
-        center_details[face_name] = {
-            'actual': center_color,
-            'expected': expected_center,
-            'match': center_color == expected_center
-        }
-        if center_color != expected_center:
-            centers_match = False
-
-    # Check if all colors appear exactly 9 times
-    is_even = all(count == 9 for count in color_counts.values())
-
-    # Validity depends on even distribution and optionally center matching
-    is_valid = is_even and (not force_centers or centers_match)
-
-    details = {
-        'color_counts': color_counts,
-        'is_even': is_even,
-        'centers_match': centers_match,
-        'center_details': center_details
-    }
-
-    return is_valid, total_confidence, details
-
-
-def evaluate_preprocessing_combination(face_images, facelets_by_face, segmenter, classifier,
-                                        preprocessor, seg_method, cc_method, force_centers=False,
-                                        cc_facelets_cache=None):
-    """
-    Evaluate a single preprocessing combination for all faces.
-
-    Args:
-        face_images: Dict of face_name -> original image
-        facelets_by_face: Dict of face_name -> facelets array (3,3,64,64,3)
-        segmenter: FaceletSegmenter instance
-        classifier: FaceletColorClassifier instance
-        preprocessor: ImagePreprocessor instance
-        seg_method: Segmentation preprocessing method name (or None)
-        cc_method: Color classification preprocessing method name (or None)
-        force_centers: If True, require centers to match expected colors
-        cc_facelets_cache: Optional cache of preprocessed facelets {cc_method -> {face_name -> facelets}}
-
-    Returns:
-        tuple: (cube_data, confidence_scores, is_valid, total_confidence, details)
-    """
-    cube_data = {}
-    confidence_scores = {}
-    total_confidence = 0.0
-
-    # Check if we have cached preprocessed facelets for this seg_method + cc_method combo
-    # Cache structure: {seg_method -> {cc_method -> {face_name -> preprocessed_facelets}}}
-    use_cached_cc = (cc_facelets_cache is not None and
-                     seg_method in cc_facelets_cache and
-                     cc_method in cc_facelets_cache[seg_method])
-
-    for face_name in FACE_NAMES:
-        if face_name not in facelets_by_face:
-            continue
-
-        facelets = facelets_by_face[face_name]
-        face_colors = []
-        face_confidences = []
-
-        # Get cached preprocessed facelets if available
-        if use_cached_cc and face_name in cc_facelets_cache[seg_method][cc_method]:
-            cached_facelets = cc_facelets_cache[seg_method][cc_method][face_name]
-        else:
-            cached_facelets = None
-
-        for row in range(3):
-            for col in range(3):
-                if cached_facelets is not None:
-                    # Use cached preprocessed facelet
-                    facelet = cached_facelets[row, col]
-                else:
-                    facelet = facelets[row, col]
-                    # Apply CC preprocessing if specified
-                    if cc_method and cc_method.lower() != 'none':
-                        facelet = preprocessor.apply(cc_method, facelet)
-
-                color, conf = classifier.classify_facelet(facelet)
-                face_colors.append(COLOR_TO_LETTER.get(color, '?'))
-                face_confidences.append(conf)
-                total_confidence += conf
-
-        cube_data[face_name] = face_colors
-        confidence_scores[face_name] = face_confidences
-
-    is_valid, _, details = evaluate_cube_result(cube_data, force_centers)
-
-    return cube_data, confidence_scores, is_valid, total_confidence, details
-
-
-def _segment_face_with_preprocess(args):
-    """Helper function for threaded segmentation preprocessing."""
-    seg_m, face_name, image, preprocessor, segmenter = args
-
-    # Apply segmentation preprocessing
-    if seg_m and seg_m.lower() != 'none':
-        processed_image = preprocessor.apply(seg_m, image)
-    else:
-        processed_image = image
-
-    # Segment the face
-    facelets = segmenter.segment(processed_image)
-    return seg_m, face_name, facelets
-
-
-def _preprocess_facelets_for_cc(args):
-    """Helper function for threaded CC facelet preprocessing."""
-    cc_method, face_name, facelets, preprocessor = args
-
-    # Apply preprocessing to each facelet
-    processed = np.empty_like(facelets)
-    for row in range(3):
-        for col in range(3):
-            if cc_method and cc_method.lower() != 'none':
-                processed[row, col] = preprocessor.apply(cc_method, facelets[row, col])
-            else:
-                processed[row, col] = facelets[row, col]
-
-    return cc_method, face_name, processed
-
-
-def _evaluate_cc_combination(args):
-    """Helper function for threaded CC preprocessing evaluation."""
-    (seg_m, cc_m, face_images, facelets_by_face, segmenter, classifier,
-     preprocessor, force_centers, cc_facelets_cache) = args
-
-    cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination(
-        face_images, facelets_by_face, segmenter, classifier,
-        preprocessor, seg_m, cc_m, force_centers, cc_facelets_cache
-    )
-
-    return {
-        'seg_method': seg_m,
-        'cc_method': cc_m,
-        'cube_data': cube_data,
-        'confidence_scores': conf_scores,
-        'is_valid': is_valid,
-        'total_confidence': total_conf,
-        'details': details
-    }
+# Note: The following are now imported from cube_evaluation module:
+# - FACE_NAMES, FACE_DISPLAY_NAMES, COLOR_TO_LETTER, EXPECTED_CENTERS
+# - evaluate_cube_result, evaluate_preprocessing_combination
+# - find_best_preprocessing_combination
+# - _segment_face_with_preprocess, _preprocess_facelets_for_cc, _evaluate_cc_combination
 
 
 def find_best_preprocessing_combination(face_images, segmenter, classifier, preprocessor,
@@ -938,77 +757,6 @@ def get_image_path(prompt="Enter the path to a Rubik's Cube face image (jpg or p
     return image_path
 
 
-def display_face_and_facelets(image, facelets, window_name="Face and Facelets",
-                              max_height=400, max_width=800):
-    """
-    Display the face image alongside a 3x3 grid of extracted facelets.
-
-    Args:
-        image: BGR numpy array of the full face image
-        facelets: numpy array of shape (3, 3, 64, 64, 3)
-        window_name: Name for the display window
-        max_height: Maximum height for the display (default 400)
-        max_width: Maximum width for the display (default 800)
-    """
-    cell_size = 80   # Size of each facelet display (smaller for compact view)
-    border = 2       # White border around each facelet
-    spacing = 2      # Space between facelets
-
-    bordered_size = cell_size + border * 2
-    grid_size = bordered_size * 3 + spacing * 2
-
-    # Black background for facelet grid
-    facelet_grid = np.zeros((grid_size, grid_size, 3), dtype=np.uint8)
-
-    for row in range(3):
-        for col in range(3):
-            facelet = facelets[row, col]
-            # Resize facelet to cell size
-            facelet_resized = cv2.resize(facelet, (cell_size, cell_size))
-            # Add white border around facelet
-            bordered = cv2.copyMakeBorder(facelet_resized, border, border, border, border,
-                                          cv2.BORDER_CONSTANT, value=(255, 255, 255))
-            # Place in grid
-            y1 = row * (bordered_size + spacing)
-            x1 = col * (bordered_size + spacing)
-            facelet_grid[y1:y1+bordered_size, x1:x1+bordered_size] = bordered
-
-    # Scale face to match facelet grid height
-    scale = grid_size / image.shape[0]
-    new_width = int(image.shape[1] * scale)
-    face_scaled = cv2.resize(image, (new_width, grid_size))
-
-    # Calculate combined width
-    gap = spacing
-    combined_width = face_scaled.shape[1] + gap + grid_size
-
-    # Scale down if too large
-    final_scale = min(1.0, max_height / grid_size, max_width / combined_width)
-    if final_scale < 1.0:
-        new_grid_size = int(grid_size * final_scale)
-        new_face_width = int(face_scaled.shape[1] * final_scale)
-        new_face_height = int(face_scaled.shape[0] * final_scale)
-        facelet_grid = cv2.resize(facelet_grid, (new_grid_size, new_grid_size))
-        face_scaled = cv2.resize(face_scaled, (new_face_width, new_face_height))
-        grid_size = new_grid_size
-
-    # Combine face and facelet grid side by side
-    gap = spacing
-    gap_img = np.zeros((grid_size, gap, 3), dtype=np.uint8)
-    combined = np.hstack([face_scaled, gap_img, facelet_grid])
-
-    # Display - destroy any existing window first to avoid showing stale content
-    with suppress_output():
-        try:
-            cv2.destroyWindow(window_name)
-            cv2.waitKey(1)  # Process the destroy
-        except cv2.error:
-            pass  # Window didn't exist yet, that's fine
-        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-        cv2.imshow(window_name, combined)
-        cv2.waitKey(100)  # Give more time for window to update
-
-
 def process_single_face(image_path, segmenter, classifier, side_name=None, display=False,
                         segmenter_preprocess=None, cc_preprocess=None, preprocessor=None):
     """
@@ -1076,8 +824,8 @@ def process_image(image, segmenter, classifier, side_name=None, display=False,
     # Display face and facelets if requested
     if display:
         window_name = f"Segmented: {side_name}" if side_name else "Segmented Face"
-        with suppress_output():
-            display_face_and_facelets(seg_image, facelets, window_name)
+        dm = get_display_manager()
+        dm.display_face_and_facelets(seg_image, facelets, window_name)
 
     # Preprocess for color classification (start from original image)
     # Apply preprocessing to each facelet independently
@@ -1370,9 +1118,9 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
                 else:
                     print("\nPress Enter to continue to solver (or 'q' to cancel)...")
                 user_input = input("> ").strip().lower()
-                with suppress_output():
-                    cv2.destroyAllWindows()
-                    cv2.waitKey(1)  # Process any pending window events after destroy
+                dm = get_display_manager()
+                dm.destroyAllWindows()
+                dm.waitKey(1)  # Process any pending window events after destroy
                 if user_input == 'q':
                     print("\nCancelled. Aborting cube solve.")
                     return
@@ -1384,15 +1132,17 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
 
         # Close any remaining display windows
         if display:
-            with suppress_output():
-                cv2.destroyAllWindows()
-                cv2.waitKey(1)  # Process any pending window events after destroy
+            dm = get_display_manager()
+            dm.destroyAllWindows()
+            dm.waitKey(1)  # Process any pending window events after destroy
 
     # Display all images with facelets if requested
     if display and captured_images_list:
         print("\nDisplaying all captured faces...")
-        display_images_grid(captured_images_list, labels=FACE_DISPLAY_NAMES,
-                            window_name="All Cube Faces", cols=3, facelets_list=captured_facelets if captured_facelets else None)
+        dm = get_display_manager()
+        dm.display_images_grid(captured_images_list, labels=FACE_DISPLAY_NAMES,
+                               window_name="All Cube Faces", cols=3,
+                               facelets_list=captured_facelets if captured_facelets else None)
 
     # All faces captured - prepare solver input
     print("\n" + "=" * 50)
@@ -1580,9 +1330,9 @@ def camera_single_face_mode(display=False, segmenter_name: str = 'auto',
         # Close display window if it was opened
         if display:
             input("\nPress Enter to close the image display...")
-            with suppress_output():
-                cv2.destroyAllWindows()
-                cv2.waitKey(1)  # Process any pending window events after destroy
+            dm = get_display_manager()
+            dm.destroyAllWindows()
+            dm.waitKey(1)  # Process any pending window events after destroy
 
     finally:
         with suppress_output():
@@ -1708,8 +1458,9 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
                 else:
                     print("\nPress Enter to continue to solver (or 'q' to cancel)...")
                 user_input = input("> ").strip().lower()
-                cv2.destroyAllWindows()
-                cv2.waitKey(1)  # Process any pending window events
+                dm = get_display_manager()
+                dm.destroyAllWindows()
+                dm.waitKey(1)  # Process any pending window events
                 if user_input == 'q':
                     print("\nCancelled. Aborting cube solve.")
                     return
@@ -1745,8 +1496,10 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
     # All faces captured - display all images if requested
     if display and captured_images_list:
         print("\nDisplaying all captured faces...")
-        display_images_grid(captured_images_list, labels=FACE_DISPLAY_NAMES,
-                            window_name="All Cube Faces", cols=3, facelets_list=captured_facelets if captured_facelets else None)
+        dm = get_display_manager()
+        dm.display_images_grid(captured_images_list, labels=FACE_DISPLAY_NAMES,
+                               window_name="All Cube Faces", cols=3,
+                               facelets_list=captured_facelets if captured_facelets else None)
 
     # Prepare solver input
     print("\n" + "=" * 50)

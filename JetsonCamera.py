@@ -418,151 +418,8 @@ class JetsonCamera:
         return False
 
 
-def display_image(image, window_name="Image", wait_key=True):
-    """
-    Display an image in a window.
-
-    Args:
-        image: BGR numpy array
-        window_name: Name for the display window
-        wait_key: If True, wait for Enter press before returning
-
-    Returns:
-        int: 0 if Enter pressed (if wait_key=True), -1 otherwise
-    """
-    if image is None:
-        print("Error: No image to display")
-        return -1
-
-    if not is_display_available():
-        print("Warning: Cannot display image - no display available (DISPLAY not set)")
-        return -1
-
-    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-    cv2.imshow(window_name, image)
-
-    if wait_key:
-        print("Press Enter to close the display...")
-        while True:
-            cv2.waitKey(30)
-            if select.select([sys.stdin], [], [], 0.0)[0]:
-                sys.stdin.readline()
-                break
-        cv2.destroyWindow(window_name)
-        return 0
-    return -1
-
-
-def display_images_grid(images, labels=None, window_name="Cube Faces", cols=3, facelets_list=None):
-    """
-    Display multiple images in a grid layout with optional facelet overlays.
-
-    Args:
-        images: List of BGR numpy arrays
-        labels: Optional list of labels for each image
-        window_name: Name for the display window
-        cols: Number of columns in the grid
-        facelets_list: Optional list of facelets arrays (shape 3,3,64,64,3) to overlay on each image
-    """
-    if not images:
-        print("Error: No images to display")
-        return
-
-    if not is_display_available():
-        print("Warning: Cannot display images - no display available (DISPLAY not set)")
-        return
-
-    # Calculate grid dimensions
-    n = len(images)
-    rows = (n + cols - 1) // cols
-
-    # Get max dimensions
-    max_h = max(img.shape[0] for img in images if img is not None)
-    max_w = max(img.shape[1] for img in images if img is not None)
-
-    # Scale down if images are too large
-    scale = 1.0
-    target_width = 1920  # Max display width
-    if max_w * cols > target_width:
-        scale = target_width / (max_w * cols)
-        max_w = int(max_w * scale)
-        max_h = int(max_h * scale)
-
-    # Create canvas
-    canvas = np.zeros((rows * max_h, cols * max_w, 3), dtype=np.uint8)
-
-    for i, img in enumerate(images):
-        if img is None:
-            continue
-
-        row = i // cols
-        col = i % cols
-
-        # Resize image if needed
-        if scale != 1.0:
-            img = cv2.resize(img, (max_w, max_h))
-        elif img.shape[0] != max_h or img.shape[1] != max_w:
-            img = cv2.resize(img, (max_w, max_h))
-
-        # Make a copy to draw on
-        img = img.copy()
-
-        # Add label if provided
-        if labels and i < len(labels):
-            cv2.putText(img, labels[i], (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
-        # Overlay facelets if provided
-        if facelets_list and i < len(facelets_list) and facelets_list[i] is not None:
-            facelets = facelets_list[i]
-            # Each facelet is 64x64, display at half size (32x32)
-            facelet_size = 32
-            grid_width = 3 * facelet_size  # 96 pixels wide
-            grid_height = 3 * facelet_size  # 96 pixels tall
-
-            # Position: center bottom of image
-            grid_x = (max_w - grid_width) // 2
-            grid_y = max_h - grid_height - 5  # 5 pixel margin from bottom
-
-            # Draw facelets in 3x3 grid
-            for r in range(3):
-                for c in range(3):
-                    facelet = facelets[r, c]
-                    facelet_resized = cv2.resize(facelet, (facelet_size, facelet_size))
-
-                    fx = grid_x + c * facelet_size
-                    fy = grid_y + r * facelet_size
-
-                    # Place facelet on image
-                    img[fy:fy+facelet_size, fx:fx+facelet_size] = facelet_resized
-
-            # Draw border around facelet grid
-            cv2.rectangle(img, (grid_x - 1, grid_y - 1),
-                         (grid_x + grid_width, grid_y + grid_height), (255, 255, 255), 1)
-
-        # Place in canvas
-        y1 = row * max_h
-        y2 = y1 + max_h
-        x1 = col * max_w
-        x2 = x1 + max_w
-        canvas[y1:y2, x1:x2] = img
-
-    with suppress_output():
-        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-        cv2.imshow(window_name, canvas)
-
-    print("Press Enter to close the display...")
-
-    # Keep updating display while waiting for terminal input
-    while True:
-        with suppress_output():
-            cv2.waitKey(30)
-        if select.select([sys.stdin], [], [], 0.0)[0]:
-            sys.stdin.readline()
-            break
-
-    with suppress_output():
-        cv2.destroyWindow(window_name)
+# Note: display_image() and display_images_grid() have been moved to DisplayManager.py
+# for cross-platform support (Jetson, Mac, Windows)
 
 
 # Test code
@@ -572,6 +429,10 @@ if __name__ == "__main__":
     print(f"Jetson detected: {is_jetson()}")
 
     if is_jetson():
+        # Import DisplayManager for test display
+        from DisplayManager import DisplayManager
+        dm = DisplayManager()
+
         print("\nTesting camera capture...")
         camera = JetsonCamera()
 
@@ -581,7 +442,7 @@ if __name__ == "__main__":
             frame = camera.capture()
             if frame is not None:
                 print(f"Captured frame: {frame.shape}")
-                display_image(frame, "Test Capture")
+                dm.display_image(frame, "Test Capture")
 
             # Test preview capture
             print("\nTesting preview capture...")
