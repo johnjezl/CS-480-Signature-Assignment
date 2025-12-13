@@ -222,13 +222,15 @@ class DisplayManager:
 
     def destroyWindow(self, window_name: str):
         """Destroy a window."""
-        if window_name in self._windows:
+        was_tracked = window_name in self._windows
+        if was_tracked:
             del self._windows[window_name]
 
         if self._remote_display:
             self._remote_display.destroyWindow(window_name)
 
-        if self.display_available:
+        # Only try to destroy if we tracked it AND display is available
+        if self.display_available and was_tracked:
             try:
                 cv2.destroyWindow(window_name)
             except cv2.error:
@@ -242,7 +244,10 @@ class DisplayManager:
             self._remote_display.destroyAllWindows()
 
         if self.display_available:
-            cv2.destroyAllWindows()
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
 
     def setWindowProperty(self, window_name: str, prop_id: int, prop_value: float):
         """Set a window property."""

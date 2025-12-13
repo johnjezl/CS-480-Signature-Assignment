@@ -48,6 +48,19 @@ import os
 from datetime import datetime
 from threading import Lock
 from typing import Optional, Dict, List
+import numpy as np
+
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 class PreprocessorMetrics:
@@ -96,7 +109,7 @@ class PreprocessorMetrics:
         self._data['metadata']['last_updated'] = datetime.now().isoformat()
         try:
             with open(self.metrics_file, 'w') as f:
-                json.dump(self._data, f, indent=2)
+                json.dump(self._data, f, indent=2, cls=NumpyJSONEncoder)
         except IOError as e:
             print(f"Warning: Could not save metrics to {self.metrics_file}: {e}")
 
