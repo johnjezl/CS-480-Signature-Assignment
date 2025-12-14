@@ -203,24 +203,6 @@ class Segmenter:
         print("-" * 70)
 
 
-# Convenience function for quick access
-def create_segmenter(name: str = DEFAULT_SEGMENTER, output_size: int = 64, **kwargs) -> Any:
-    """
-    Create a segmenter instance by name.
-
-    Convenience function equivalent to Segmenter.create().
-
-    Args:
-        name: Segmenter name (case-insensitive)
-        output_size: Size of output facelet images (default 64x64)
-        **kwargs: Additional arguments passed to the segmenter constructor
-
-    Returns:
-        Segmenter instance
-    """
-    return Segmenter.create(name, output_size, **kwargs)
-
-
 if __name__ == '__main__':
     # Demo/test
     print("Segmenter Front-End")

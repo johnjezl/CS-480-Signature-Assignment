@@ -51,6 +51,100 @@ from typing import Optional, Dict, List
 import numpy as np
 
 
+# Default metrics from historical data (top 10 combinations per segmenter, excluding auto)
+# Used as fallback when metrics file cannot be loaded
+DEFAULT_METRICS = {
+    'metadata': {
+        'created': '2024-12-14T00:00:00',
+        'last_updated': None,
+        'version': 2,
+        'note': 'Default metrics from historical data'
+    },
+    'segmenters': {
+        'brightness-otsu': {
+            'seg_preprocess': {},
+            'cc_preprocess': {},
+            'combinations': {
+                'morph-open+bilateral-strong': {'successes': 3, 'failures': 1, 'total_confidence': 21261.85, 'attempts': 4},
+                'morph-open+gaussian': {'successes': 3, 'failures': 1, 'total_confidence': 21240.67, 'attempts': 4},
+                'morph-open+morph-close': {'successes': 3, 'failures': 1, 'total_confidence': 21252.81, 'attempts': 4},
+                'cube-color-mask+bilateral': {'successes': 2, 'failures': 2, 'total_confidence': 21091.23, 'attempts': 4},
+                'cube-color-mask+bilateral-strong': {'successes': 2, 'failures': 2, 'total_confidence': 21117.09, 'attempts': 4},
+                'cube-color-mask+gaussian': {'successes': 2, 'failures': 2, 'total_confidence': 21118.89, 'attempts': 4},
+                'cube-color-mask+median': {'successes': 2, 'failures': 2, 'total_confidence': 21107.44, 'attempts': 4},
+                'cube-color-mask+morph-close': {'successes': 2, 'failures': 2, 'total_confidence': 21102.22, 'attempts': 4},
+                'cube-color-mask+morph-open': {'successes': 2, 'failures': 2, 'total_confidence': 21128.46, 'attempts': 4},
+                'cube-color-mask+none': {'successes': 2, 'failures': 2, 'total_confidence': 21094.11, 'attempts': 4},
+            }
+        },
+        'canny-square': {
+            'seg_preprocess': {},
+            'cc_preprocess': {},
+            'combinations': {
+                'clahe-lab+cube-color-mask': {'successes': 1, 'failures': 3, 'total_confidence': 19792.60, 'attempts': 4},
+                'clahe-lab+cube-color-mask-soft': {'successes': 1, 'failures': 3, 'total_confidence': 19807.44, 'attempts': 4},
+                'contrast-stretch+bilateral': {'successes': 1, 'failures': 3, 'total_confidence': 18842.36, 'attempts': 4},
+                'contrast-stretch+bilateral-strong': {'successes': 1, 'failures': 3, 'total_confidence': 18873.60, 'attempts': 4},
+                'contrast-stretch+cube-color-mask': {'successes': 1, 'failures': 3, 'total_confidence': 19177.92, 'attempts': 4},
+                'contrast-stretch+cube-color-mask-soft': {'successes': 1, 'failures': 3, 'total_confidence': 19226.25, 'attempts': 4},
+                'contrast-stretch+gaussian': {'successes': 1, 'failures': 3, 'total_confidence': 18897.91, 'attempts': 4},
+                'contrast-stretch+median': {'successes': 1, 'failures': 3, 'total_confidence': 18836.73, 'attempts': 4},
+                'contrast-stretch+morph-close': {'successes': 1, 'failures': 3, 'total_confidence': 19052.30, 'attempts': 4},
+                'contrast-stretch+morph-open': {'successes': 1, 'failures': 3, 'total_confidence': 18799.97, 'attempts': 4},
+            }
+        },
+        'contour-neighbor': {
+            'seg_preprocess': {},
+            'cc_preprocess': {},
+            'combinations': {
+                'clahe-hsv+bilateral': {'successes': 3, 'failures': 1, 'total_confidence': 21168.38, 'attempts': 4},
+                'clahe-hsv+bilateral-strong': {'successes': 3, 'failures': 1, 'total_confidence': 21164.23, 'attempts': 4},
+                'clahe-hsv+cube-color-mask-soft': {'successes': 3, 'failures': 1, 'total_confidence': 21357.23, 'attempts': 4},
+                'clahe-hsv+gaussian': {'successes': 3, 'failures': 1, 'total_confidence': 21167.17, 'attempts': 4},
+                'clahe-hsv+median': {'successes': 3, 'failures': 1, 'total_confidence': 21171.24, 'attempts': 4},
+                'clahe-hsv+morph-close': {'successes': 3, 'failures': 1, 'total_confidence': 21177.07, 'attempts': 4},
+                'clahe-hsv+morph-open': {'successes': 3, 'failures': 1, 'total_confidence': 21167.51, 'attempts': 4},
+                'clahe-hsv+none': {'successes': 3, 'failures': 1, 'total_confidence': 21178.46, 'attempts': 4},
+                'clahe-hsv+unsharp': {'successes': 3, 'failures': 1, 'total_confidence': 21184.25, 'attempts': 4},
+                'cube-color-mask-soft+bilateral': {'successes': 3, 'failures': 1, 'total_confidence': 21452.38, 'attempts': 4},
+            }
+        },
+        'contour-perspective': {
+            'seg_preprocess': {},
+            'cc_preprocess': {},
+            'combinations': {
+                'gaussian+bilateral': {'successes': 3, 'failures': 1, 'total_confidence': 20946.55, 'attempts': 4},
+                'gaussian+bilateral-strong': {'successes': 3, 'failures': 1, 'total_confidence': 20980.87, 'attempts': 4},
+                'gaussian+cube-color-mask': {'successes': 3, 'failures': 1, 'total_confidence': 20981.13, 'attempts': 4},
+                'gaussian+cube-color-mask-soft': {'successes': 3, 'failures': 1, 'total_confidence': 21153.31, 'attempts': 4},
+                'gaussian+gaussian': {'successes': 3, 'failures': 1, 'total_confidence': 20986.11, 'attempts': 4},
+                'gaussian+median': {'successes': 3, 'failures': 1, 'total_confidence': 20928.53, 'attempts': 4},
+                'gaussian+morph-close': {'successes': 3, 'failures': 1, 'total_confidence': 20942.13, 'attempts': 4},
+                'gaussian+none': {'successes': 3, 'failures': 1, 'total_confidence': 20926.16, 'attempts': 4},
+                'bilateral+bilateral': {'successes': 2, 'failures': 2, 'total_confidence': 20910.87, 'attempts': 4},
+                'bilateral+bilateral-strong': {'successes': 2, 'failures': 2, 'total_confidence': 20941.39, 'attempts': 4},
+            }
+        },
+        'grid-division': {
+            'seg_preprocess': {},
+            'cc_preprocess': {},
+            'combinations': {
+                'cube-color-mask+gaussian': {'successes': 3, 'failures': 2, 'total_confidence': 25734.39, 'attempts': 5},
+                'bilateral+bilateral': {'successes': 2, 'failures': 2, 'total_confidence': 20305.92, 'attempts': 4},
+                'bilateral+bilateral-strong': {'successes': 2, 'failures': 2, 'total_confidence': 20342.00, 'attempts': 4},
+                'bilateral+cube-color-mask': {'successes': 2, 'failures': 2, 'total_confidence': 20361.04, 'attempts': 4},
+                'bilateral+cube-color-mask-soft': {'successes': 2, 'failures': 2, 'total_confidence': 20468.43, 'attempts': 4},
+                'bilateral+gaussian': {'successes': 2, 'failures': 2, 'total_confidence': 20331.34, 'attempts': 4},
+                'bilateral+median': {'successes': 2, 'failures': 2, 'total_confidence': 20278.25, 'attempts': 4},
+                'bilateral+morph-close': {'successes': 2, 'failures': 2, 'total_confidence': 20321.96, 'attempts': 4},
+                'bilateral+morph-open': {'successes': 2, 'failures': 2, 'total_confidence': 20253.91, 'attempts': 4},
+                'bilateral+none': {'successes': 2, 'failures': 2, 'total_confidence': 20213.11, 'attempts': 4},
+            }
+        },
+    }
+}
+
+
 class NumpyJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder that handles numpy types."""
     def default(self, obj):
@@ -81,7 +175,7 @@ class PreprocessorMetrics:
         self._data = self._load_data()
 
     def _load_data(self) -> dict:
-        """Load existing metrics from file or create new structure."""
+        """Load existing metrics from file, use defaults on failure."""
         if os.path.exists(self.metrics_file):
             try:
                 with open(self.metrics_file, 'r') as f:
@@ -89,29 +183,44 @@ class PreprocessorMetrics:
                 # Check for new structure
                 if 'segmenters' in data:
                     return data
-                # Old structure - start fresh
-                print(f"Note: Old metrics format detected, starting fresh.")
-            except (json.JSONDecodeError, IOError):
-                pass
+                # Old structure - start fresh with defaults
+                print(f"Note: Old metrics format detected, using default metrics.")
+                return self._get_default_metrics()
+            except json.JSONDecodeError as e:
+                print(f"Warning: Could not parse metrics file '{self.metrics_file}': {e}")
+                print("         Using default metrics from historical data.")
+                return self._get_default_metrics()
+            except IOError as e:
+                print(f"Warning: Could not read metrics file '{self.metrics_file}': {e}")
+                print("         Using default metrics from historical data.")
+                return self._get_default_metrics()
+            except Exception as e:
+                print(f"Warning: Unexpected error loading metrics: {e}")
+                print("         Using default metrics from historical data.")
+                return self._get_default_metrics()
 
-        # Create new data structure
-        return {
-            'metadata': {
-                'created': datetime.now().isoformat(),
-                'last_updated': None,
-                'version': 2
-            },
-            'segmenters': {}
-        }
+        # File doesn't exist - use default metrics
+        return self._get_default_metrics()
+
+    def _get_default_metrics(self) -> dict:
+        """Return a copy of default metrics with current timestamp."""
+        import copy
+        data = copy.deepcopy(DEFAULT_METRICS)
+        data['metadata']['created'] = datetime.now().isoformat()
+        return data
 
     def _save_data(self):
-        """Save metrics to file."""
+        """Save metrics to file. Warns on failure but continues."""
         self._data['metadata']['last_updated'] = datetime.now().isoformat()
         try:
             with open(self.metrics_file, 'w') as f:
                 json.dump(self._data, f, indent=2, cls=NumpyJSONEncoder)
         except IOError as e:
-            print(f"Warning: Could not save metrics to {self.metrics_file}: {e}")
+            print(f"Warning: Could not save metrics to '{self.metrics_file}': {e}")
+            print("         Metrics will not be persisted for this session.")
+        except Exception as e:
+            print(f"Warning: Unexpected error saving metrics: {e}")
+            print("         Metrics will not be persisted for this session.")
 
     def _empty_stats(self) -> dict:
         """Return an empty stats entry."""

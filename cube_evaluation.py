@@ -194,36 +194,13 @@ def _preprocess_all_facelets_for_cc(seg_m, facelets_by_face, preprocessor, cc_me
     return result
 
 
-def _evaluate_single_combination(args):
-    """
-    Evaluate a single seg+cc combination.
-
-    This function is designed to be called in a worker process.
-    Note: classifier must be created fresh in each process if using multiprocessing.
-    """
-    seg_m, cc_m, facelets_by_face, force_centers, classifier = args
-
-    cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination_batch(
-        facelets_by_face, classifier, force_centers
-    )
-
-    return {
-        'seg_method': seg_m,
-        'cc_method': cc_m,
-        'cube_data': cube_data,
-        'confidence_scores': conf_scores,
-        'is_valid': is_valid,
-        'total_confidence': total_conf,
-        'details': details
-    }
-
-
 def find_best_preprocessing_combination(face_images, segmenter, classifier, preprocessor,
                                           all_seg_preprocess=False, all_cc_preprocess=False,
                                           seg_method=None, cc_method=None, force_centers=False,
                                           max_workers=None, segmenter_name: str = 'unknown',
                                           verbose=True, record_metrics=True,
-                                          early_stop_confidence=None):
+                                          early_stop_confidence=None,
+                                          seg_methods_list=None, cc_methods_list=None):
     """
     Find the best preprocessing combination that produces valid cube results.
 
@@ -244,6 +221,8 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
         verbose: If True, print progress information
         record_metrics: If True, record metrics to PreprocessorMetrics
         early_stop_confidence: If set, stop early when a result exceeds this threshold
+        seg_methods_list: Optional explicit list of segmentation preprocessing methods
+        cc_methods_list: Optional explicit list of CC preprocessing methods
 
     Returns:
         tuple: (best_cube_data, best_confidences, seg_method, cc_method, all_results)
@@ -251,9 +230,20 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
     """
     methods = preprocessor.get_available_methods()
 
-    # Determine which methods to try
-    seg_methods = methods if all_seg_preprocess else [seg_method or 'none']
-    cc_methods = methods if all_cc_preprocess else [cc_method or 'none']
+    # Determine which methods to try (explicit list takes precedence)
+    if seg_methods_list is not None:
+        seg_methods = seg_methods_list
+    elif all_seg_preprocess:
+        seg_methods = methods
+    else:
+        seg_methods = [seg_method or 'none']
+
+    if cc_methods_list is not None:
+        cc_methods = cc_methods_list
+    elif all_cc_preprocess:
+        cc_methods = methods
+    else:
+        cc_methods = [cc_method or 'none']
 
     total_combos = len(seg_methods) * len(cc_methods)
     use_parallel = total_combos > 1
@@ -480,7 +470,8 @@ def load_face_images(directory, face_names=None):
 def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
                                segmenter_name: str = 'unknown', force_centers=False,
                                verbose=True, record_metrics=True,
-                               early_stop_confidence=None):
+                               early_stop_confidence=None,
+                               seg_methods_list=None, cc_methods_list=None):
     """
     Evaluate ALL preprocessing combinations and return results.
 
@@ -497,6 +488,8 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
         verbose: If True, print progress
         record_metrics: If True, record to PreprocessorMetrics
         early_stop_confidence: If set, stop early when a result exceeds this
+        seg_methods_list: Optional explicit list of segmentation preprocessing methods
+        cc_methods_list: Optional explicit list of CC preprocessing methods
 
     Returns:
         tuple: (best_result, all_results)
@@ -505,13 +498,16 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
     """
     best_cube_data, best_confidences, best_seg, best_cc, all_results = find_best_preprocessing_combination(
         face_images, segmenter, classifier, preprocessor,
-        all_seg_preprocess=True,
-        all_cc_preprocess=True,
+        all_seg_preprocess=(seg_methods_list is None),
+        all_cc_preprocess=(cc_methods_list is None),
         force_centers=force_centers,
         segmenter_name=segmenter_name,
         verbose=verbose,
         record_metrics=record_metrics,
-        early_stop_confidence=early_stop_confidence
+        early_stop_confidence=early_stop_confidence,
+        seg_methods_list=seg_methods_list,
+        cc_methods_list=cc_methods_list,
+        max_workers = 4
     )
 
     if best_cube_data is not None:

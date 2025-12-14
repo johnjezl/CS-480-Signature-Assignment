@@ -1376,28 +1376,3 @@ class FaceletSegmenterV2:
                 idx += 1
 
         return saved_paths
-
-
-# Functional interface for compatibility with v1
-def segment_cube_face_v2(
-    image: np.ndarray,
-    bbox: Optional[BoundingBox] = None,
-    output_size: int = 64
-) -> np.ndarray:
-    """
-    Functional interface for v2 facelet segmentation.
-
-    Args:
-        image: Input image containing a Rubik's cube face (BGR format)
-        bbox: Optional bounding box for the face region
-        output_size: Size of output facelet images (default 64)
-
-    Returns:
-        numpy array of shape (3, 3, output_size, output_size, 3)
-    """
-    segmenter = FaceletSegmenterV2(output_size=output_size)
-    return segmenter.segment(image, bbox)
-
-
-# Alias for main class name compatibility
-FaceletSegmenter = FaceletSegmenterV2

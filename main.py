@@ -60,10 +60,11 @@ from DisplayManager import DisplayManager, get_platform
 from cube_evaluation import (
     evaluate_cube_result, evaluate_preprocessing_combination,
     FACE_NAMES, FACE_DISPLAY_NAMES, COLOR_TO_LETTER, EXPECTED_CENTERS,
-    _segment_face_with_preprocess, _preprocess_facelets_for_cc, _evaluate_cc_combination,
+    _segment_face_with_preprocess, _evaluate_cc_combination,
     load_face_images
 )
 from adaptive_evaluator import AdaptiveEvaluator
+from RubiksCubeSolver import RubiksCubeSolver
 
 # Try to import GPU preprocessor (requires VPI on Jetson)
 try:
@@ -72,6 +73,23 @@ try:
 except ImportError:
     GPU_PREPROCESSOR_AVAILABLE = False
     GPUImagePreprocessor = None
+
+# Global solver instance (initialized once at startup)
+_solver: RubiksCubeSolver = None
+
+def get_solver() -> RubiksCubeSolver:
+    """Get the global solver instance."""
+    global _solver
+    if _solver is None:
+        raise RuntimeError("Solver not initialized. Call init_solver() first.")
+    return _solver
+
+def init_solver(use_gpu: bool = True, debug: bool = False) -> RubiksCubeSolver:
+    """Initialize the global solver instance."""
+    global _solver
+    if _solver is None:
+        _solver = RubiksCubeSolver(use_gpu=use_gpu, debug=debug)
+    return _solver
 
 # Try to import Jetson camera module
 try:
@@ -277,7 +295,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 # - FACE_NAMES, FACE_DISPLAY_NAMES, COLOR_TO_LETTER, EXPECTED_CENTERS
 # - evaluate_cube_result, evaluate_preprocessing_combination
 # - find_best_preprocessing_combination
-# - _segment_face_with_preprocess, _preprocess_facelets_for_cc, _evaluate_cc_combination
+# - _segment_face_with_preprocess, _evaluate_cc_combination
 
 
 def find_best_preprocessing_combination(face_images, segmenter, classifier, preprocessor,
@@ -874,30 +892,11 @@ def single_face_mode(segmenter_name: str = 'auto',
     print("  SINGLE FACE MODE")
     print("=" * 50)
 
-    # Initialize segmenter
-    debug_print(f"Initializing segmenter '{segmenter_name}'...")
-    start_time = time.time()
-    with suppress_output():
-        segmenter = Segmenter.create(segmenter_name)
-    segmenter_time = time.time() - start_time
-    debug_print(f"Segmenter ready (took {segmenter_time:.3f}s)")
-
-    debug_print("Initializing FaceletColorClassifier...")
-    start_time = time.time()
-    with suppress_output():
-        classifier = FaceletColorClassifier()
-    classifier_time = time.time() - start_time
-    debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
-
-    # Initialize preprocessor if needed
-    preprocessor = None
-    if segmenter_preprocess or cc_preprocess:
-        debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
-        preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
-        if segmenter_preprocess:
-            debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
-        if cc_preprocess:
-            debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
+    # Get solver components (already initialized at startup)
+    solver = get_solver()
+    segmenter = solver.get_segmenter(segmenter_name)
+    classifier = solver.classifier
+    preprocessor = solver.preprocessor
 
     # Get image path
     image_path = get_image_path()
@@ -1026,28 +1025,11 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
     for face_key in FACE_NAMES:
         print(f"  {face_key}: {os.path.basename(face_files[face_key])}")
 
-    # Initialize segmenter
-    debug_print(f"Initializing segmenter '{segmenter_name}'...")
-    start_time = time.time()
-    with suppress_output():
-        segmenter = Segmenter.create(segmenter_name)
-    segmenter_time = time.time() - start_time
-    debug_print(f"Segmenter ready (took {segmenter_time:.3f}s)")
-
-    debug_print("Initializing FaceletColorClassifier...")
-    start_time = time.time()
-    with suppress_output():
-        classifier = FaceletColorClassifier()
-    classifier_time = time.time() - start_time
-    debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
-
-    # Initialize preprocessor (always needed for all_* modes)
-    debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
-    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
-    if segmenter_preprocess:
-        debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
-    if cc_preprocess:
-        debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
+    # Get solver components (already initialized at startup)
+    solver = get_solver()
+    segmenter = solver.get_segmenter(segmenter_name)
+    classifier = solver.classifier
+    preprocessor = solver.preprocessor
 
     # Dictionary to store face data for the solver
     cube_data = {}
@@ -1310,30 +1292,11 @@ def camera_single_face_mode(display=False, segmenter_name: str = 'auto',
     print("  CAMERA SINGLE FACE MODE")
     print("=" * 50)
 
-    # Initialize segmenter
-    debug_print(f"Initializing segmenter '{segmenter_name}'...")
-    start_time = time.time()
-    with suppress_output():
-        segmenter = Segmenter.create(segmenter_name)
-    segmenter_time = time.time() - start_time
-    debug_print(f"Segmenter ready (took {segmenter_time:.3f}s)")
-
-    debug_print("Initializing FaceletColorClassifier...")
-    start_time = time.time()
-    with suppress_output():
-        classifier = FaceletColorClassifier()
-    classifier_time = time.time() - start_time
-    debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
-
-    # Initialize preprocessor if needed
-    preprocessor = None
-    if segmenter_preprocess or cc_preprocess:
-        debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
-        preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
-        if segmenter_preprocess:
-            debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
-        if cc_preprocess:
-            debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
+    # Get solver components (already initialized at startup)
+    solver = get_solver()
+    segmenter = solver.get_segmenter(segmenter_name)
+    classifier = solver.classifier
+    preprocessor = solver.preprocessor
 
     debug_print("Initializing JetsonCamera...")
     start_time = time.time()
@@ -1427,28 +1390,11 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
     print("\nYou will capture all 6 faces of the cube using the camera.")
     print("Follow the on-screen instructions for each face.")
 
-    # Initialize segmenter
-    debug_print(f"Initializing segmenter '{segmenter_name}'...")
-    start_time = time.time()
-    with suppress_output():
-        segmenter = Segmenter.create(segmenter_name)
-    segmenter_time = time.time() - start_time
-    debug_print(f"Segmenter ready (took {segmenter_time:.3f}s)")
-
-    debug_print("Initializing FaceletColorClassifier...")
-    start_time = time.time()
-    with suppress_output():
-        classifier = FaceletColorClassifier()
-    classifier_time = time.time() - start_time
-    debug_print(f"FaceletColorClassifier ready (took {classifier_time:.3f}s)")
-
-    # Initialize preprocessor (always needed for all_* modes)
-    debug_print(f"Initializing GPUImagePreprocessor (GPU={'enabled' if use_gpu else 'disabled'})...")
-    preprocessor = GPUImagePreprocessor(use_gpu=use_gpu)
-    if segmenter_preprocess:
-        debug_print(f"  Segmenter preprocessing: {segmenter_preprocess}")
-    if cc_preprocess:
-        debug_print(f"  Color classifier preprocessing: {cc_preprocess}")
+    # Get solver components (already initialized at startup)
+    solver = get_solver()
+    segmenter = solver.get_segmenter(segmenter_name)
+    classifier = solver.classifier
+    preprocessor = solver.preprocessor
 
     debug_print("Initializing JetsonCamera...")
     start_time = time.time()
@@ -1745,25 +1691,21 @@ def main():
     )
     args = parser.parse_args()
 
-    # Validate preprocessing options - auto-detect GPU availability
-    use_gpu = False
-    gpu_status_msg = None
+    # Initialize the solver (this loads the classifier and sets up components once)
+    use_gpu = not args.nogpu
+    print("Initializing solver components...")
+    solver = init_solver(use_gpu=use_gpu, debug=False)
+
+    # Get GPU status for display
     if args.nogpu:
-        preprocessor = ImagePreprocessor()
         gpu_status_msg = "GPU: Disabled (--nogpu flag)"
-    elif not GPU_PREPROCESSOR_AVAILABLE:
-        preprocessor = ImagePreprocessor()
-        gpu_status_msg = "GPU: Not available (GPUImagePreprocessor module not found)"
+    elif solver.use_gpu:
+        gpu_status_msg = "GPU: Enabled (VPI/CUDA)"
     else:
-        # Try to initialize GPU preprocessor and check if GPU is actually available
-        preprocessor = GPUImagePreprocessor(use_gpu=True)
-        if preprocessor.is_gpu_enabled():
-            use_gpu = True
-            gpu_status_msg = "GPU: Enabled (VPI/CUDA)"
-        else:
-            # GPU not available, fall back to CPU
-            preprocessor = ImagePreprocessor()
-            gpu_status_msg = "GPU: Not available (VPI/CUDA not detected)"
+        gpu_status_msg = "GPU: Not available"
+
+    # Use solver's preprocessor for validation
+    preprocessor = solver.preprocessor
     valid_methods = preprocessor.get_available_methods()
     valid_methods_normalized = [m.lower().replace('_', '-') for m in valid_methods]
 
