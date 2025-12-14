@@ -8,20 +8,22 @@ Menu-driven application with multiple modes:
 4. Camera Full Cube: Capture all 6 faces from camera and solve (Jetson only)
 
 Usage:
-    python main.py [--display] [--segmenter NAME] [--rotate] [--animate]
+    python main.py [--display] [--segmenter NAME] [--rotate] [--no-animation]
                    [--segmenter-preprocess METHOD] [--cc-preprocess METHOD]
                    [--all-segmenter-preprocess] [--all-cc-preprocess] [--force-centers]
+                   [--adaptive]
 
 Options:
     --display    Show captured images on display (for Jetson with monitor)
     --segmenter NAME    Segmentation algorithm to use (default: auto)
     --rotate     Rotate camera images 180 degrees (for inverted camera mounting)
-    --animate    Animate the solution moves on a 3D cube visualization after solving
+    --no-animation Disable solution animation (on by default with --display)
     --segmenter-preprocess METHOD   Preprocess image before segmentation
     --cc-preprocess METHOD          Preprocess image before color classification
     --all-segmenter-preprocess      Try all preprocessing methods for segmentation
     --all-cc-preprocess             Try all preprocessing methods for color classification
     --force-centers                 Force center facelets to match expected colors
+    --adaptive                      Use adaptive evaluation with two-result confirmation
 
 Segmentation Algorithms:
     auto               - Auto-select best algorithm based on image analysis (default)
@@ -58,8 +60,10 @@ from DisplayManager import DisplayManager, get_platform
 from cube_evaluation import (
     evaluate_cube_result, evaluate_preprocessing_combination,
     FACE_NAMES, FACE_DISPLAY_NAMES, COLOR_TO_LETTER, EXPECTED_CENTERS,
-    _segment_face_with_preprocess, _preprocess_facelets_for_cc, _evaluate_cc_combination
+    _segment_face_with_preprocess, _preprocess_facelets_for_cc, _evaluate_cc_combination,
+    load_face_images
 )
+from adaptive_evaluator import AdaptiveEvaluator
 
 # Try to import GPU preprocessor (requires VPI on Jetson)
 try:
@@ -175,47 +179,23 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
     # Create window - use AUTOSIZE for better compatibility across platforms
     dm.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-    dm.waitKey(1)  # Process window events
+
+    # Flush any pending key events from previous operations
+    for _ in range(10):
+        dm.waitKey(1)
 
     print(f"\nAnimating {len(moves_list)} moves...")
-    print("Press 'q' to skip animation, any other key to pause/resume")
+    print("In terminal: press Enter to pause/resume, 'q' to skip")
 
     paused = False
     move_idx = 0
-    last_status_len = 0  # Track length for proper clearing
-
-    def print_status(status_str):
-        """Print status with proper line clearing for Windows compatibility."""
-        nonlocal last_status_len
-        # Pad with spaces to clear previous content
-        padded = status_str.ljust(last_status_len)
-        sys.stdout.write(f"\r{padded}")
-        sys.stdout.flush()
-        last_status_len = len(status_str)
-
-    def window_closed():
-        """Check if window was closed by user."""
-        try:
-            return cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1
-        except cv2.error:
-            return True
 
     while move_idx < len(moves_list):
         move = moves_list[move_idx]
 
-        # Show move label
-        status = "[PAUSED] " if paused else ""
-        print_status(f"  {status}Move {move_idx + 1}/{len(moves_list)}: {move}")
-
         # Animate this move using while loop so pause can freeze frame
         frame = 0
         while frame <= frames_per_move:
-            # Check if window was closed
-            if window_closed():
-                print_status("  Animation cancelled.")
-                print()  # New line
-                return
-
             angle_fraction = frame / frames_per_move
 
             # Ease in-out for smoother animation
@@ -223,7 +203,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
             img = renderer.render_frame(cube, move, ease_fraction)
 
-            # Add move counter to image
+            # Add move counter to image (this is the only place move info is shown)
             status_text = "[PAUSED] " if paused else ""
             cv2.putText(img, f"{status_text}Move {move_idx + 1}/{len(moves_list)}: {move}",
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
@@ -231,21 +211,26 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
             dm.imshow(window_name, img)
 
-            # Use short timeout even when paused to keep window responsive
-            key = dm.waitKey(delay_ms if not paused else 50)
-            # Mask to get actual key code (needed for some platforms)
-            key = key & 0xFF
-            if key == ord('q') or key == ord('Q'):
-                print_status("  Animation skipped.")
-                print()  # New line
-                dm.destroyAllWindows()
-                dm.waitKey(1)
-                return
-            elif key != 255 and key != 0:  # Valid key pressed (not 'no key')
-                paused = not paused
-                # Update console status immediately when pause state changes
-                status = "[PAUSED] " if paused else ""
-                print_status(f"  {status}Move {move_idx + 1}/{len(moves_list)}: {move}")
+            # Brief wait to control animation speed
+            dm.waitKey(delay_ms if not paused else 50)
+
+            # Check for terminal input (more reliable than cv2.waitKey on Jetson)
+            try:
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    char = sys.stdin.read(1)
+                    if char == 'q' or char == 'Q':
+                        print("Animation skipped.")
+                        dm.destroyAllWindows()
+                        dm.waitKey(1)
+                        return
+                    elif char == ' ' or char == '\n':
+                        paused = not paused
+                        if paused:
+                            print("Paused. Press space/enter to resume, 'q' to skip.")
+                        else:
+                            print("Resumed.")
+            except (TypeError, ValueError, OSError):
+                pass
 
             # Only advance frame if not paused
             if not paused:
@@ -256,8 +241,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
         move_idx += 1
 
     # Show final solved state
-    print_status("  Animation complete!")
-    print()  # New line
+    print("Animation complete!")
     final_img = renderer.render_frame(cube, None, 0)
     cv2.putText(final_img, "SOLVED!", (window_width // 2 - 100, window_height // 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, cv2.LINE_AA)
@@ -266,13 +250,12 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 (255, 255, 255), 2, cv2.LINE_AA)
     dm.imshow(window_name, final_img)
 
-    # Wait for key or window close
-    while True:
-        # Check if window was closed
-        if window_closed():
-            break
-        key = dm.waitKey(100) & 0xFF
-        if key != 255 and key != 0:
+    # Wait for any key press (with timeout to stay responsive)
+    timeout_count = 0
+    max_timeout = 300  # 30 seconds max wait (300 * 100ms)
+    while timeout_count < max_timeout:
+        key = dm.waitKey(100)
+        if key != -1:
             break
         # Also check for Enter key in terminal (Unix only)
         try:
@@ -282,6 +265,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
         except (TypeError, ValueError, OSError):
             # select doesn't work with stdin on Windows
             pass
+        timeout_count += 1
 
     # Properly clean up OpenCV windows
     dm.destroyAllWindows()
@@ -1014,7 +998,7 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
                    segmenter_preprocess: str = None, cc_preprocess: str = None,
                    animate: bool = False, all_seg_preprocess: bool = False,
                    all_cc_preprocess: bool = False, force_centers: bool = False,
-                   use_gpu: bool = True):
+                   use_gpu: bool = True, adaptive: bool = False):
     """Mode 2: Process all 6 faces and solve the cube."""
     print("\n" + "=" * 50)
     print("  FULL CUBE SOLVER MODE")
@@ -1072,8 +1056,47 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
 
     # Check if we need to do multi-preprocessing evaluation
     use_multi_preprocess = all_seg_preprocess or all_cc_preprocess
+    use_adaptive = adaptive and not use_multi_preprocess
 
-    if use_multi_preprocess:
+    if use_adaptive:
+        # Adaptive mode: use historical metrics to select best preprocessing
+        print("\nLoading all face images...")
+        for face_key in FACE_NAMES:
+            image_path = face_files[face_key]
+            image = cv2.imread(image_path)
+            if image is None:
+                print(f"\nError: Could not load image for {face_key}")
+                return
+            captured_images[face_key] = image
+            print(f"  Loaded {face_key}: {os.path.basename(image_path)}")
+
+        # Use adaptive evaluation
+        print("\nRunning adaptive evaluation (two-result confirmation)...")
+        evaluator = AdaptiveEvaluator()
+        result = evaluator.evaluate(
+            captured_images, classifier, preprocessor,
+            max_attempts=100,
+            combos_per_round=5,
+            background_samples=10,
+            force_centers=force_centers,
+            record_metrics=True,
+            verbose=True
+        )
+
+        if not result['is_valid']:
+            if result.get('valid_results_count', 0) > 0:
+                print(f"\nWARNING: Found {result['valid_results_count']} valid result(s) but could not confirm.")
+                print("No two results matched - cube state may be ambiguous.")
+            else:
+                print("\nError: No valid result found. Aborting cube solve.")
+            return
+
+        cube_data = result['cube_data']
+
+        # Convert captured_images dict to list for display
+        captured_images_list = [captured_images[face_key] for face_key in FACE_NAMES]
+
+    elif use_multi_preprocess:
         # Load all face images first
         print("\nLoading all face images...")
         for face_key in FACE_NAMES:
@@ -1376,7 +1399,8 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
                           rotate: bool = False, segmenter_preprocess: str = None,
                           cc_preprocess: str = None, animate: bool = False,
                           all_seg_preprocess: bool = False, all_cc_preprocess: bool = False,
-                          force_centers: bool = False, use_gpu: bool = True):
+                          force_centers: bool = False, use_gpu: bool = True,
+                          adaptive: bool = False):
     """
     Mode 4: Capture all 6 faces from camera and solve the cube.
 
@@ -1391,6 +1415,7 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
         all_cc_preprocess: If True, try all CC preprocessing methods
         force_centers: If True, require centers to match expected colors
         use_gpu: If True, use GPU acceleration for preprocessing
+        adaptive: If True, use adaptive evaluation with two-result confirmation
     """
     if not JETSON_AVAILABLE:
         print("\nError: Camera mode requires Jetson hardware with IMX219 camera.")
@@ -1442,6 +1467,8 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
 
     # Check if we need to do multi-preprocessing evaluation
     use_multi_preprocess = all_seg_preprocess or all_cc_preprocess
+    use_adaptive = adaptive and not use_multi_preprocess
+    defer_processing = use_multi_preprocess or use_adaptive
 
     try:
         # Capture each face
@@ -1461,7 +1488,7 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
             captured_images[face_key] = image.copy()
             captured_images_list.append(image.copy())
 
-            if not use_multi_preprocess:
+            if not defer_processing:
                 # Process immediately in single-pass mode
                 debug_print("Processing captured image...")
                 classifications, facelets = process_image(image, segmenter, classifier, side_name=face_key, display=display,
@@ -1507,8 +1534,32 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
         with suppress_output():
             camera.close()
 
+    # If adaptive mode, use adaptive evaluation
+    if use_adaptive:
+        print("\nRunning adaptive evaluation (two-result confirmation)...")
+        evaluator = AdaptiveEvaluator()
+        result = evaluator.evaluate(
+            captured_images, classifier, preprocessor,
+            max_attempts=100,
+            combos_per_round=5,
+            background_samples=10,
+            force_centers=force_centers,
+            record_metrics=True,
+            verbose=True
+        )
+
+        if not result['is_valid']:
+            if result.get('valid_results_count', 0) > 0:
+                print(f"\nWARNING: Found {result['valid_results_count']} valid result(s) but could not confirm.")
+                print("No two results matched - cube state may be ambiguous.")
+            else:
+                print("\nError: No valid result found. Aborting cube solve.")
+            return
+
+        cube_data = result['cube_data']
+
     # If multi-preprocess mode, evaluate all combinations now
-    if use_multi_preprocess:
+    elif use_multi_preprocess:
         best_cube_data, best_confidences, best_seg, best_cc, all_results = find_best_preprocessing_combination(
             captured_images, segmenter, classifier, preprocessor,
             all_seg_preprocess=all_seg_preprocess,
@@ -1662,9 +1713,9 @@ def main():
         help='Preprocess image before color classification (e.g., satboost, bilateral, clahe-lab)'
     )
     parser.add_argument(
-        '--animate',
+        '--no-animation',
         action='store_true',
-        help='Animate the solution moves on a 3D cube visualization after solving'
+        help='Disable solution animation (animation is on by default when --display is enabled)'
     )
     parser.add_argument(
         '--all-segmenter-preprocess',
@@ -1685,6 +1736,12 @@ def main():
         '--nogpu',
         action='store_true',
         help='Disable GPU acceleration for preprocessing (use CPU only)'
+    )
+    parser.add_argument(
+        '--adaptive',
+        action='store_true',
+        help='Use adaptive evaluation: intelligently selects preprocessing combos based on '
+             'historical metrics, requires two identical valid results for confirmation'
     )
     args = parser.parse_args()
 
@@ -1762,6 +1819,8 @@ def main():
         print(f"[Segmenter preprocessing: {args.segmenter_preprocess}]")
     if args.cc_preprocess:
         print(f"[Color classifier preprocessing: {args.cc_preprocess}]")
+    if args.adaptive:
+        print("[Adaptive mode: Uses historical metrics with two-result confirmation]")
 
     # Menu-driven loop
     while True:
@@ -1782,25 +1841,31 @@ def main():
                             segmenter_preprocess=args.segmenter_preprocess,
                             cc_preprocess=args.cc_preprocess, use_gpu=use_gpu)
         elif choice == '2':
+            # Animation is on by default when display is enabled
+            animate = args.display and not args.no_animation
             full_cube_mode(segmenter_name=args.segmenter, display=args.display,
                           segmenter_preprocess=args.segmenter_preprocess,
-                          cc_preprocess=args.cc_preprocess, animate=args.animate,
+                          cc_preprocess=args.cc_preprocess, animate=animate,
                           all_seg_preprocess=args.all_segmenter_preprocess,
                           all_cc_preprocess=args.all_cc_preprocess,
-                          force_centers=args.force_centers, use_gpu=use_gpu)
+                          force_centers=args.force_centers, use_gpu=use_gpu,
+                          adaptive=args.adaptive)
         elif choice == '3' and JETSON_AVAILABLE:
             camera_single_face_mode(display=args.display, segmenter_name=args.segmenter,
                                    rotate=args.rotate,
                                    segmenter_preprocess=args.segmenter_preprocess,
                                    cc_preprocess=args.cc_preprocess, use_gpu=use_gpu)
         elif choice == '4' and JETSON_AVAILABLE:
+            # Animation is on by default when display is enabled
+            animate = args.display and not args.no_animation
             camera_full_cube_mode(display=args.display, segmenter_name=args.segmenter,
                                  rotate=args.rotate,
                                  segmenter_preprocess=args.segmenter_preprocess,
-                                 cc_preprocess=args.cc_preprocess, animate=args.animate,
+                                 cc_preprocess=args.cc_preprocess, animate=animate,
                                  all_seg_preprocess=args.all_segmenter_preprocess,
                                  all_cc_preprocess=args.all_cc_preprocess,
-                                 force_centers=args.force_centers, use_gpu=use_gpu)
+                                 force_centers=args.force_centers, use_gpu=use_gpu,
+                                 adaptive=args.adaptive)
         elif choice == 'q':
             print("\nGoodbye!")
             break
