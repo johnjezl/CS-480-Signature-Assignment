@@ -25,45 +25,44 @@ import numpy as np
 from typing import Dict, List, Optional, Type, Any
 
 # Import all segmenter implementations
-from facelet_segmenter import FaceletSegmenter
-from facelet_segmenter_v2 import FaceletSegmenterV2
-from facelet_segmenter_v3 import FaceletSegmenterV3
-from facelet_segmenter_v4 import FaceletSegmenterV4
-from facelet_segmenter_v5 import FaceletSegmenterV5
+from FaceletSegmenterGridDivision import FaceletSegmenterGridDivision
+from FaceletSegmenterContourPerspective import FaceletSegmenterContourPerspective
+from FaceletSegmenterContourNeighbor import FaceletSegmenterContourNeighbor
+from FaceletSegmenterCannySquare import FaceletSegmenterCannySquare
+from FaceletSegmenterBrightnessOtsu import FaceletSegmenterBrightnessOtsu
 
 
 # Registry of segmenters with meaningful names
 _SEGMENTERS: Dict[str, Dict[str, Any]] = {
     'grid-division': {
-        'class': FaceletSegmenter,
+        'class': FaceletSegmenterGridDivision,
         'description': 'Basic grid division - detects cube boundary and divides into 3x3 grid',
-        'details': 'Original v1 segmenter. Finds the cube region and subdivides it evenly. '
+        'details': 'Finds the cube region and subdivides it evenly. '
                    'Works well with centered, axis-aligned cubes.'
     },
     'contour-perspective': {
-        'class': FaceletSegmenterV2,
+        'class': FaceletSegmenterContourPerspective,
         'description': 'Contour detection with perspective correction',
-        'details': 'V2 segmenter. Uses contour-based quadrilateral detection and homography '
+        'details': 'Uses contour-based quadrilateral detection and homography '
                    'transform for perspective correction. Good for tilted cubes and complex backgrounds.'
     },
     'contour-neighbor': {
-        'class': FaceletSegmenterV3,
+        'class': FaceletSegmenterContourNeighbor,
         'description': 'Contour-based facelet detection with neighbor validation',
-        'details': 'V3 segmenter. Directly detects individual square facelets and validates them '
+        'details': 'Directly detects individual square facelets and validates them '
                    'by checking neighbor relationships. A valid facelet must have at least one neighbor.'
     },
     'canny-square': {
-        'class': FaceletSegmenterV4,
+        'class': FaceletSegmenterCannySquare,
         'description': 'Canny edge detection with square finding',
-        'details': 'V4 segmenter. Uses Canny edge detection and contour analysis to find '
+        'details': 'Uses Canny edge detection and contour analysis to find '
                    'square-shaped regions, then groups them into a 3x3 grid pattern.'
     },
     'brightness-otsu': {
-        'class': FaceletSegmenterV5,
+        'class': FaceletSegmenterBrightnessOtsu,
         'description': 'Brightness-based detection with Otsu thresholding',
-        'details': 'V5 segmenter (Greg\'s CV approach). Uses HSV value channel with Otsu '
-                   'thresholding to detect bright stickers against dark cube plastic. '
-                   'Works well when stickers are brighter than the cube body.'
+        'details': 'Uses HSV value channel with Otsu thresholding to detect bright stickers '
+                   'against dark cube plastic. Works well when stickers are brighter than the cube body.'
     },
 }
 

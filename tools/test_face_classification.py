@@ -8,18 +8,18 @@ import os
 import glob
 import shutil
 import cv2
-from facelet_segmenter import FaceletSegmenter
+from FaceletSegmenterGridDivisionGridDivision import FaceletSegmenterGridDivisionGridDivision
 from FaceletColorClassifier import FaceletColorClassifier
 
 
-def test_image(image_path: str, segmenter: FaceletSegmenter, classifier: FaceletColorClassifier,
+def test_image(image_path: str, segmenter: FaceletSegmenterGridDivision, classifier: FaceletColorClassifier,
                debug_dir: str = None):
     """
     Test a single image: segment it and classify colors.
 
     Args:
         image_path: Path to the image file
-        segmenter: FaceletSegmenter instance
+        segmenter: FaceletSegmenterGridDivision instance
         classifier: FaceletColorClassifier instance
         debug_dir: Optional directory to save extracted facelets for debugging
     """
@@ -104,7 +104,7 @@ def main():
 
     # Initialize components
     print("\nInitializing...")
-    segmenter = FaceletSegmenter(output_size=64)
+    segmenter = FaceletSegmenterGridDivision(output_size=64)
     classifier = FaceletColorClassifier(model_path='models/best_model.pth')
     print(f"  Segmenter: Ready")
     print(f"  Classifier: Ready (device: {classifier.device})")

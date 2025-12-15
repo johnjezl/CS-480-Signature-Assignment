@@ -49,7 +49,7 @@ class Quadrilateral:
         return BoundingBox(x_min, y_min, x_max - x_min, y_max - y_min)
 
 
-class FaceletSegmenterV2:
+class FaceletSegmenterContourPerspective:
     """
     Version 2 of the Rubik's cube face segmenter with improved detection.
 
@@ -61,7 +61,7 @@ class FaceletSegmenterV2:
     - Multi-strategy approach with fallbacks
 
     Usage:
-        segmenter = FaceletSegmenterV2(output_size=64)
+        segmenter = FaceletSegmenterContourPerspective(output_size=64)
         facelets = segmenter.segment(image)
         # or with explicit bounding box (falls back to v1-style):
         facelets = segmenter.segment(image, bbox=BoundingBox(100, 50, 300, 300))
@@ -77,6 +77,9 @@ class FaceletSegmenterV2:
         """
         self.output_size = output_size
         self.debug = debug
+        # Pre-create reusable kernels
+        self._kernel_3x3 = np.ones((3, 3), np.uint8)
+        self._kernel_5x5 = np.ones((5, 5), np.uint8)
 
     def segment(
         self,
@@ -402,13 +405,10 @@ class FaceletSegmenterV2:
             edges_list.append(edges)
 
         # Combine edges from all scales
-        combined_edges = np.zeros_like(edges_list[0])
-        for edges in edges_list:
-            combined_edges = cv2.bitwise_or(combined_edges, edges)
+        combined_edges = np.maximum(np.maximum(edges_list[0], edges_list[1]), edges_list[2])
 
-        # Dilate to connect nearby edges
-        kernel = np.ones((3, 3), np.uint8)
-        dilated = cv2.dilate(combined_edges, kernel, iterations=2)
+        # Dilate to connect nearby edges (use pre-created kernel)
+        dilated = cv2.dilate(combined_edges, self._kernel_3x3, iterations=2)
 
         # Find contours
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

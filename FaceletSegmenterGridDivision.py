@@ -28,12 +28,12 @@ class BoundingBox:
     rotation: float = 0.0  # Rotation angle in degrees (counter-clockwise)
 
 
-class FaceletSegmenter:
+class FaceletSegmenterGridDivision:
     """
     Segments a Rubik's cube face image into 9 individual facelet images.
 
     Usage:
-        segmenter = FaceletSegmenter(output_size=64)
+        segmenter = FaceletSegmenterGridDivision(output_size=64)
         facelets = segmenter.segment(image)
         # or with explicit bounding box:
         facelets = segmenter.segment(image, bbox=BoundingBox(100, 50, 300, 300))
@@ -1086,5 +1086,5 @@ def segment_cube_face(
         numpy array of shape (3, 3, output_size, output_size, 3)
         representing a 3x3 grid of facelets in BGR format
     """
-    segmenter = FaceletSegmenter(output_size=output_size)
+    segmenter = FaceletSegmenterGridDivision(output_size=output_size)
     return segmenter.segment(image, bbox)

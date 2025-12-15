@@ -35,7 +35,7 @@ class BoundingBox:
     rotation: float = 0.0
 
 
-class FaceletSegmenterV5:
+class FaceletSegmenterBrightnessOtsu:
     """
     Segments a Rubik's cube face using brightness-based detection.
 
@@ -43,7 +43,7 @@ class FaceletSegmenterV5:
     to detect bright stickers against the dark cube plastic.
 
     Usage:
-        segmenter = FaceletSegmenterV5(output_size=64)
+        segmenter = FaceletSegmenterBrightnessOtsu(output_size=64)
         facelets = segmenter.segment(image)
     """
 
@@ -361,5 +361,5 @@ def segment_cube_face(
     Returns:
         numpy array of shape (3, 3, output_size, output_size, 3)
     """
-    segmenter = FaceletSegmenterV5(output_size=output_size)
+    segmenter = FaceletSegmenterBrightnessOtsu(output_size=output_size)
     return segmenter.segment(image, bbox)

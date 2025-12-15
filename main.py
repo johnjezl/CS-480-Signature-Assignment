@@ -1785,9 +1785,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        '--display',
+        '--no-display',
         action='store_true',
-        help='Show captured images on display (for Jetson with monitor)'
+        help='Suppress image display (display is enabled by default)'
     )
     parser.add_argument(
         '--segmenter',
@@ -1847,10 +1847,10 @@ def main():
         help='Disable GPU acceleration for preprocessing (use CPU only)'
     )
     parser.add_argument(
-        '--adaptive',
+        '--no-adaptive',
         action='store_true',
-        help='Use adaptive evaluation: intelligently selects preprocessing combos based on '
-             'historical metrics, requires two identical valid results for confirmation'
+        help='Disable adaptive evaluation (enabled by default). '
+             'Adaptive mode is automatically disabled when --segmenter-preprocess or --cc-preprocess is specified.'
     )
     parser.add_argument(
         '--debug',
@@ -1909,10 +1909,18 @@ def main():
     print("  Segmentation + Color Classification + IDA* Solver")
     print("=" * 50)
 
+    # Compute display and adaptive flags
+    display = not args.no_display
+
+    # Adaptive is default unless disabled or specific preprocessors are specified
+    use_adaptive = not args.no_adaptive
+    if args.segmenter_preprocess or args.cc_preprocess:
+        use_adaptive = False  # Specific preprocessors disable adaptive
+
     # Show platform and GPU status
     if JETSON_AVAILABLE:
         print("\n[Jetson detected - Camera modes available]")
-        if args.display:
+        if display:
             print("[Display mode enabled - Images will be shown on monitor]")
     else:
         print("\n[Running on non-Jetson platform - File modes only]")
@@ -1936,8 +1944,10 @@ def main():
         print(f"[Segmenter preprocessing: {args.segmenter_preprocess}]")
     if args.cc_preprocess:
         print(f"[Color classifier preprocessing: {args.cc_preprocess}]")
-    if args.adaptive:
+    if use_adaptive:
         print("[Adaptive mode: Uses historical metrics with two-result confirmation]")
+    elif args.segmenter_preprocess or args.cc_preprocess:
+        print("[Adaptive mode disabled: specific preprocessors specified]")
 
     # Menu-driven loop
     while True:
@@ -1959,26 +1969,26 @@ def main():
                             cc_preprocess=args.cc_preprocess, use_gpu=use_gpu)
         elif choice == '2':
             # Animation is on by default when display is enabled
-            animate = args.display and not args.no_animation
+            animate = display and not args.no_animation
             step_by_step = not args.no_step_by_step
-            full_cube_mode(segmenter_name=args.segmenter, display=args.display,
+            full_cube_mode(segmenter_name=args.segmenter, display=display,
                           segmenter_preprocess=args.segmenter_preprocess,
                           cc_preprocess=args.cc_preprocess, animate=animate,
                           step_by_step=step_by_step,
                           all_seg_preprocess=args.all_segmenter_preprocess,
                           all_cc_preprocess=args.all_cc_preprocess,
                           force_centers=args.force_centers, use_gpu=use_gpu,
-                          adaptive=args.adaptive)
+                          adaptive=use_adaptive)
         elif choice == '3' and JETSON_AVAILABLE:
-            camera_single_face_mode(display=args.display, segmenter_name=args.segmenter,
+            camera_single_face_mode(display=display, segmenter_name=args.segmenter,
                                    rotate=args.rotate,
                                    segmenter_preprocess=args.segmenter_preprocess,
                                    cc_preprocess=args.cc_preprocess, use_gpu=use_gpu)
         elif choice == '4' and JETSON_AVAILABLE:
             # Animation is on by default when display is enabled
-            animate = args.display and not args.no_animation
+            animate = display and not args.no_animation
             step_by_step = not args.no_step_by_step
-            camera_full_cube_mode(display=args.display, segmenter_name=args.segmenter,
+            camera_full_cube_mode(display=display, segmenter_name=args.segmenter,
                                  rotate=args.rotate,
                                  segmenter_preprocess=args.segmenter_preprocess,
                                  cc_preprocess=args.cc_preprocess, animate=animate,
@@ -1986,7 +1996,7 @@ def main():
                                  all_seg_preprocess=args.all_segmenter_preprocess,
                                  all_cc_preprocess=args.all_cc_preprocess,
                                  force_centers=args.force_centers, use_gpu=use_gpu,
-                                 adaptive=args.adaptive)
+                                 adaptive=use_adaptive)
         elif choice == 'q':
             print("\nGoodbye!")
             break

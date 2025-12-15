@@ -38,7 +38,7 @@ class BoundingBox:
     rotation: float = 0.0
 
 
-class FaceletSegmenterV4:
+class FaceletSegmenterCannySquare:
     """
     Version 4 segmenter using standard OpenCV square detection.
 
@@ -63,6 +63,11 @@ class FaceletSegmenterV4:
         """
         self.output_size = output_size
         self.debug = debug
+        # Pre-create reusable kernels
+        self._kernel_3x3 = np.ones((3, 3), np.uint8)
+        self._kernel_5x5 = np.ones((5, 5), np.uint8)
+        self._kernel_7x7 = np.ones((7, 7), np.uint8)
+        self._kernel_11x11 = np.ones((11, 11), np.uint8)
 
     def segment(
         self,
@@ -536,9 +541,8 @@ class FaceletSegmenterV4:
 
         # Combine edges from all strategies
         for edges in [edges1, edges2, edges3, edges4]:
-            # Dilate to connect broken edges
-            kernel = np.ones((3, 3), np.uint8)
-            dilated = cv2.dilate(edges, kernel, iterations=1)
+            # Dilate to connect broken edges (use pre-created kernel)
+            dilated = cv2.dilate(edges, self._kernel_3x3, iterations=1)
 
             # Find contours
             contours, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
@@ -955,18 +959,17 @@ class FaceletSegmenterV4:
         edges = cv2.Canny(blurred, 60, 180)
 
         # Morphological operations to connect edges and fill the cube region
-        kernel = np.ones((7, 7), np.uint8)
-        edges_filled = cv2.dilate(edges, kernel, iterations=4)
-        edges_filled = cv2.morphologyEx(edges_filled, cv2.MORPH_CLOSE, kernel, iterations=3)
+        # (use pre-created kernels)
+        edges_filled = cv2.dilate(edges, self._kernel_7x7, iterations=4)
+        edges_filled = cv2.morphologyEx(edges_filled, cv2.MORPH_CLOSE, self._kernel_7x7, iterations=3)
 
         # Combine saturation and edges
         combined_mask = cv2.addWeighted(sat_mask, 0.7, edges_filled, 0.3, 0)
         _, combined_mask = cv2.threshold(combined_mask, 100, 255, cv2.THRESH_BINARY)
 
-        # Final cleanup
-        kernel_large = np.ones((11, 11), np.uint8)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel_large, iterations=2)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        # Final cleanup (use pre-created kernels)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, self._kernel_11x11, iterations=2)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, self._kernel_7x7, iterations=1)
 
         # Find contours
         contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

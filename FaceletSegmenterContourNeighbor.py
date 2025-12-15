@@ -53,7 +53,7 @@ class DetectedFacelet:
     grid_position: Optional[Tuple[int, int]] = None  # (row, col) if assigned
 
 
-class FaceletSegmenterV3:
+class FaceletSegmenterContourNeighbor:
     """
     Version 3 of the Rubik's cube face segmenter using contour-based detection.
 
@@ -67,7 +67,7 @@ class FaceletSegmenterV3:
     - Dominant color extraction using k-means
 
     Usage:
-        segmenter = FaceletSegmenterV3(output_size=64)
+        segmenter = FaceletSegmenterContourNeighbor(output_size=64)
         facelets = segmenter.segment(image)
     """
 
@@ -725,24 +725,21 @@ class FaceletSegmenterV3:
             return candidates
 
         # Group candidates by spatial proximity
-        # Calculate pairwise distances between candidates
+        # Calculate pairwise distances between candidates using vectorized operations
         n = len(candidates)
         centers = np.array([c.center for c in candidates])
 
         # Get median size for distance threshold
-        sizes = [max(c.bounding_rect[2], c.bounding_rect[3]) for c in candidates]
+        sizes = np.array([max(c.bounding_rect[2], c.bounding_rect[3]) for c in candidates])
         median_size = np.median(sizes)
 
         # Find connected components using neighbor distance
         max_neighbor_dist = median_size * 2.5
-        adjacency = np.zeros((n, n), dtype=bool)
 
-        for i in range(n):
-            for j in range(i + 1, n):
-                dist = np.sqrt(np.sum((centers[i] - centers[j])**2))
-                if dist < max_neighbor_dist:
-                    adjacency[i, j] = True
-                    adjacency[j, i] = True
+        # Vectorized distance calculation
+        diff = centers[:, np.newaxis, :] - centers[np.newaxis, :, :]
+        distances = np.sqrt(np.sum(diff ** 2, axis=2))
+        adjacency = (distances < max_neighbor_dist) & (distances > 0)
 
         # Find connected components using BFS
         visited = [False] * n
