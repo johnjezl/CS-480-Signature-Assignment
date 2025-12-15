@@ -11,13 +11,15 @@ Usage:
     python main.py [--display] [--segmenter NAME] [--rotate] [--no-animation]
                    [--segmenter-preprocess METHOD] [--cc-preprocess METHOD]
                    [--all-segmenter-preprocess] [--all-cc-preprocess] [--force-centers]
-                   [--adaptive]
+                   [--adaptive] [--debug]
 
 Options:
     --display    Show captured images on display (for Jetson with monitor)
-    --segmenter NAME    Segmentation algorithm to use (default: auto)
+    --segmenter NAME    Segmentation algorithm to use (default: contour-neighbor)
+    --debug      Enable debug logging output
     --rotate     Rotate camera images 180 degrees (for inverted camera mounting)
     --no-animation Disable solution animation (on by default with --display)
+    --no-step-by-step  Disable step-by-step animation (plays continuously)
     --segmenter-preprocess METHOD   Preprocess image before segmentation
     --cc-preprocess METHOD          Preprocess image before color classification
     --all-segmenter-preprocess      Try all preprocessing methods for segmentation
@@ -26,10 +28,9 @@ Options:
     --adaptive                      Use adaptive evaluation with two-result confirmation
 
 Segmentation Algorithms:
-    auto               - Auto-select best algorithm based on image analysis (default)
     brightness-otsu    - Brightness-based detection with Otsu thresholding
     canny-square       - Canny edge detection with square finding
-    contour-neighbor   - Contour-based detection with neighbor validation
+    contour-neighbor   - Contour-based detection with neighbor validation (default)
     contour-perspective - Contour detection with perspective correction
     grid-division      - Basic grid division (original algorithm)
 
@@ -46,8 +47,15 @@ import os
 import json
 import time
 import argparse
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+
+# Check for --debug flag early, BEFORE importing other modules
+# This ensures DEBUG environment variable is set before modules check it
+if '--debug' in sys.argv:
+    os.environ['DEBUG'] = '1'
+    # Note: debug_print not available yet, message will be written to log after setup
 
 from Segmenter import Segmenter
 from FaceletColorClassifier import FaceletColorClassifier
@@ -65,6 +73,9 @@ from cube_evaluation import (
 )
 from adaptive_evaluator import AdaptiveEvaluator
 from RubiksCubeSolver import RubiksCubeSolver
+
+# Debug flag - can be set via environment variable or --debug command line flag
+DEBUG = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes')
 
 # Try to import GPU preprocessor (requires VPI on Jetson)
 try:
@@ -93,7 +104,8 @@ def init_solver(use_gpu: bool = True, debug: bool = False) -> RubiksCubeSolver:
 
 # Try to import Jetson camera module
 try:
-    from JetsonCamera import JetsonCamera, is_jetson, debug_print, suppress_output
+    from JetsonCamera import JetsonCamera, is_jetson, suppress_output
+    # Note: We don't import debug_print from JetsonCamera because it writes to a file
     JETSON_AVAILABLE = is_jetson()
 except ImportError:
     JETSON_AVAILABLE = False
@@ -102,13 +114,24 @@ except ImportError:
     def is_jetson():
         return False
 
-    def debug_print(msg):
-        pass
-
     from contextlib import contextmanager
     @contextmanager
     def suppress_output():
         yield
+
+# Debug log setup
+LOG_DIR = "log"
+os.makedirs(LOG_DIR, exist_ok=True)
+_debug_log_file = None
+
+def debug_print(msg):
+    """Write debug message to log file if DEBUG is enabled."""
+    global _debug_log_file
+    if DEBUG:
+        if _debug_log_file is None:
+            _debug_log_file = open(os.path.join(LOG_DIR, "debug.log"), "a")
+        _debug_log_file.write(f"[DEBUG] {msg}\n")
+        _debug_log_file.flush()
 
 # Global display manager instance (initialized in main())
 _display_manager: DisplayManager = None
@@ -160,7 +183,57 @@ class TermColors:
         return color_map.get(color_letter.upper(), (cls.BG_BLACK, cls.FG_WHITE))
 
 
-def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
+def move_to_instruction(move: str) -> str:
+    """
+    Convert a move notation to human-readable instruction.
+
+    Args:
+        move: Move string like 'R', "U'", 'F2', etc.
+
+    Returns:
+        Human-readable instruction string
+    """
+    # Parse move components
+    face = move[0].upper()
+
+    # Determine direction and amount
+    # Standard Rubik's cube notation (looking directly at the face being rotated):
+    #   - No suffix (e.g., R) = clockwise 90°
+    #   - Prime (e.g., R') = counter-clockwise 90°
+    #   - 2 (e.g., R2) = 180° (half turn)
+    if len(move) == 1:
+        direction = "clockwise"
+        degrees = "90°"
+    elif move[1] == "'":
+        direction = "counter-clockwise"
+        degrees = "90°"
+    elif move[1] == "2":
+        direction = "180°"
+        degrees = "180°"
+    else:
+        direction = "clockwise"
+        degrees = "90°"
+
+    # Face names and orientations
+    face_names = {
+        'U': ('TOP', 'looking down at the cube'),
+        'D': ('BOTTOM', 'looking up at the cube'),
+        'F': ('FRONT', 'facing you'),
+        'B': ('BACK', 'facing away from you'),
+        'R': ('RIGHT', 'from the right side'),
+        'L': ('LEFT', 'from the left side'),
+    }
+
+    face_name, orientation = face_names.get(face, (face, ''))
+
+    if direction == "180°":
+        return f"Rotate {face_name} face {degrees} (half turn) - {orientation}"
+    else:
+        return f"Rotate {face_name} face {degrees} {direction} - {orientation}"
+
+
+def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
+                     step_by_step=True, pause_at_end_ms=1000):
     """
     Animate the solution moves on a 3D cube visualization.
 
@@ -168,7 +241,9 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
         cube_data: Dict with face colors {'up': ['W','W',...], 'down': [...], ...}
         moves_list: List of move strings ['R', "U'", 'F2', ...]
         delay_ms: Delay between animation frames in milliseconds
-        frames_per_move: Number of frames per move animation
+        frames_per_move: Number of frames per move animation (default 40 for smooth half-speed)
+        step_by_step: If True, pause after each move and show text instructions
+        pause_at_end_ms: Milliseconds to pause at end of rotation before looping (default 1000)
     """
     import math
     import select
@@ -202,8 +277,18 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
     for _ in range(10):
         dm.waitKey(1)
 
+    # Flush stdin to clear any buffered input
+    try:
+        import termios
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except (ImportError, termios.error):
+        pass
+
     print(f"\nAnimating {len(moves_list)} moves...")
-    print("In terminal: press Enter to pause/resume, 'q' to skip")
+    if step_by_step:
+        print("Step-by-step mode: Press Enter after each move to proceed, 'q' to skip")
+    else:
+        print("In terminal: press Enter to pause/resume, 'q' to skip")
 
     paused = False
     move_idx = 0
@@ -211,9 +296,19 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
     while move_idx < len(moves_list):
         move = moves_list[move_idx]
 
-        # Animate this move using while loop so pause can freeze frame
+        # In step-by-step mode, print instruction before animating
+        if step_by_step:
+            instruction = move_to_instruction(move)
+            print(f"\n>>> Step {move_idx + 1}/{len(moves_list)}: {move}")
+            print(f"    {instruction}")
+            print("    Press Enter to continue, 'q' to skip...")
+
+        # Animation loop - loops until user advances (step_by_step) or completes (continuous)
         frame = 0
-        while frame <= frames_per_move:
+        advance_to_next = False  # Flag to break out when user presses Enter
+
+        while True:
+            # Calculate animation progress (loop within frames_per_move)
             angle_fraction = frame / frames_per_move
 
             # Ease in-out for smoother animation
@@ -221,11 +316,23 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
 
             img = renderer.render_frame(cube, move, ease_fraction)
 
-            # Add move counter to image (this is the only place move info is shown)
+            # Add move counter and status to image
             status_text = "[PAUSED] " if paused else ""
             cv2.putText(img, f"{status_text}Move {move_idx + 1}/{len(moves_list)}: {move}",
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                         (255, 255, 255), 2, cv2.LINE_AA)
+
+            # In step-by-step, show instruction on screen too
+            if step_by_step:
+                instruction = move_to_instruction(move)
+                # Wrap long instructions
+                cv2.putText(img, instruction[:50],
+                            (20, window_height - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            (255, 255, 0), 2, cv2.LINE_AA)
+                if len(instruction) > 50:
+                    cv2.putText(img, instruction[50:],
+                                (20, window_height - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                (255, 255, 0), 2, cv2.LINE_AA)
 
             dm.imshow(window_name, img)
 
@@ -237,11 +344,22 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
                 if select.select([sys.stdin], [], [], 0)[0]:
                     char = sys.stdin.read(1)
                     if char == 'q' or char == 'Q':
-                        print("Animation skipped.")
+                        print("\nAnimation skipped.")
                         dm.destroyAllWindows()
                         dm.waitKey(1)
                         return
-                    elif char == ' ' or char == '\n':
+                    elif char == '\n':
+                        if step_by_step:
+                            # Advance to next move
+                            advance_to_next = True
+                        else:
+                            # Toggle pause
+                            paused = not paused
+                            if paused:
+                                print("Paused. Press Enter to resume, 'q' to skip.")
+                            else:
+                                print("Resumed.")
+                    elif char == ' ' and not step_by_step:
                         paused = not paused
                         if paused:
                             print("Paused. Press space/enter to resume, 'q' to skip.")
@@ -250,9 +368,40 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=20):
             except (TypeError, ValueError, OSError):
                 pass
 
-            # Only advance frame if not paused
+            # Advance animation frame if not paused
             if not paused:
                 frame += 1
+
+            # Check if animation cycle is complete
+            if frame > frames_per_move:
+                if step_by_step:
+                    # Pause at end of rotation before looping
+                    if pause_at_end_ms > 0:
+                        # Show final frame during pause, but check for input
+                        pause_end = time.time() + pause_at_end_ms / 1000.0
+                        while time.time() < pause_end:
+                            dm.waitKey(50)
+                            # Check for user input during pause
+                            try:
+                                if select.select([sys.stdin], [], [], 0)[0]:
+                                    char = sys.stdin.read(1)
+                                    if char == 'q' or char == 'Q':
+                                        print("\nAnimation skipped.")
+                                        dm.destroyAllWindows()
+                                        dm.waitKey(1)
+                                        return
+                                    elif char == '\n':
+                                        advance_to_next = True
+                                        break
+                            except (TypeError, ValueError, OSError):
+                                pass
+                    # Loop the animation continuously until user presses Enter
+                    frame = 0
+                    if advance_to_next:
+                        break
+                else:
+                    # Non-step-by-step: move to next move after one cycle
+                    break
 
         # Apply the move to cube state
         cube.apply_move(move)
@@ -326,7 +475,13 @@ def find_best_preprocessing_combination(face_images, segmenter, classifier, prep
     methods = preprocessor.get_available_methods()
 
     # Determine which methods to try
-    seg_methods = methods if all_seg_preprocess else [seg_method or 'none']
+    # For brightness-otsu, skip seg preprocessing unless explicitly specified
+    # (Otsu thresholding is adaptive and doesn't benefit from preprocessing)
+    if segmenter_name == 'brightness-otsu' and all_seg_preprocess and seg_method is None:
+        seg_methods = ['none']
+        debug_print("brightness-otsu: skipping seg preprocessing (Otsu is adaptive)")
+    else:
+        seg_methods = methods if all_seg_preprocess else [seg_method or 'none']
     cc_methods = methods if all_cc_preprocess else [cc_method or 'none']
 
     total_combos = len(seg_methods) * len(cc_methods)
@@ -884,7 +1039,7 @@ def process_image(image, segmenter, classifier, side_name=None, display=False,
     return classifications, facelets
 
 
-def single_face_mode(segmenter_name: str = 'auto',
+def single_face_mode(segmenter_name: str = 'contour-neighbor',
                      segmenter_preprocess: str = None, cc_preprocess: str = None,
                      use_gpu: bool = True):
     """Mode 1: Process a single face image."""
@@ -993,9 +1148,10 @@ def find_face_images(directory):
     return face_files
 
 
-def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
+def full_cube_mode(segmenter_name: str = 'contour-neighbor', display: bool = False,
                    segmenter_preprocess: str = None, cc_preprocess: str = None,
-                   animate: bool = False, all_seg_preprocess: bool = False,
+                   animate: bool = False, step_by_step: bool = True,
+                   all_seg_preprocess: bool = False,
                    all_cc_preprocess: bool = False, force_centers: bool = False,
                    use_gpu: bool = True, adaptive: bool = False):
     """Mode 2: Process all 6 faces and solve the cube."""
@@ -1262,7 +1418,7 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
 
             # Animate solution if requested
             if animate and moves:
-                animate_solution(cube_data, moves)
+                animate_solution(cube_data, moves, step_by_step=step_by_step)
         else:
             print("\nError: Solution file not found.")
 
@@ -1270,7 +1426,7 @@ def full_cube_mode(segmenter_name: str = 'auto', display: bool = False,
         print(f"\nError running solver: {e}")
 
 
-def camera_single_face_mode(display=False, segmenter_name: str = 'auto',
+def camera_single_face_mode(display=False, segmenter_name: str = 'contour-neighbor',
                             rotate: bool = False, segmenter_preprocess: str = None,
                             cc_preprocess: str = None, use_gpu: bool = True):
     """
@@ -1358,9 +1514,10 @@ def camera_single_face_mode(display=False, segmenter_name: str = 'auto',
             camera.close()
 
 
-def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
+def camera_full_cube_mode(display=False, segmenter_name: str = 'contour-neighbor',
                           rotate: bool = False, segmenter_preprocess: str = None,
                           cc_preprocess: str = None, animate: bool = False,
+                          step_by_step: bool = True,
                           all_seg_preprocess: bool = False, all_cc_preprocess: bool = False,
                           force_centers: bool = False, use_gpu: bool = True,
                           adaptive: bool = False):
@@ -1373,6 +1530,7 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
         rotate: If True, rotate captured images 180 degrees
         segmenter_preprocess: Preprocessing method name for segmentation
         animate: If True, animate the solution moves after solving
+        step_by_step: If True, pause animation after each move for user confirmation
         cc_preprocess: Preprocessing method name for color classification
         all_seg_preprocess: If True, try all segmentation preprocessing methods
         all_cc_preprocess: If True, try all CC preprocessing methods
@@ -1611,7 +1769,7 @@ def camera_full_cube_mode(display=False, segmenter_name: str = 'auto',
 
             # Animate solution if requested
             if animate and moves:
-                animate_solution(cube_data, moves)
+                animate_solution(cube_data, moves, step_by_step=step_by_step)
         else:
             print("\nError: Solution file not found.")
 
@@ -1664,6 +1822,11 @@ def main():
         help='Disable solution animation (animation is on by default when --display is enabled)'
     )
     parser.add_argument(
+        '--no-step-by-step',
+        action='store_true',
+        help='Disable step-by-step mode in animation (plays continuously without pausing)'
+    )
+    parser.add_argument(
         '--all-segmenter-preprocess',
         action='store_true',
         help='Try all preprocessing methods for segmentation and select best result'
@@ -1689,12 +1852,24 @@ def main():
         help='Use adaptive evaluation: intelligently selects preprocessing combos based on '
              'historical metrics, requires two identical valid results for confirmation'
     )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug logging output'
+    )
     args = parser.parse_args()
+
+    # Enable debug mode if requested (may already be set by early detection)
+    global DEBUG
+    if args.debug:
+        DEBUG = True
+        os.environ['DEBUG'] = '1'
+        debug_print("Debug mode enabled")
 
     # Initialize the solver (this loads the classifier and sets up components once)
     use_gpu = not args.nogpu
     print("Initializing solver components...")
-    solver = init_solver(use_gpu=use_gpu, debug=False)
+    solver = init_solver(use_gpu=use_gpu, debug=DEBUG)
 
     # Get GPU status for display
     if args.nogpu:
@@ -1785,9 +1960,11 @@ def main():
         elif choice == '2':
             # Animation is on by default when display is enabled
             animate = args.display and not args.no_animation
+            step_by_step = not args.no_step_by_step
             full_cube_mode(segmenter_name=args.segmenter, display=args.display,
                           segmenter_preprocess=args.segmenter_preprocess,
                           cc_preprocess=args.cc_preprocess, animate=animate,
+                          step_by_step=step_by_step,
                           all_seg_preprocess=args.all_segmenter_preprocess,
                           all_cc_preprocess=args.all_cc_preprocess,
                           force_centers=args.force_centers, use_gpu=use_gpu,
@@ -1800,10 +1977,12 @@ def main():
         elif choice == '4' and JETSON_AVAILABLE:
             # Animation is on by default when display is enabled
             animate = args.display and not args.no_animation
+            step_by_step = not args.no_step_by_step
             camera_full_cube_mode(display=args.display, segmenter_name=args.segmenter,
                                  rotate=args.rotate,
                                  segmenter_preprocess=args.segmenter_preprocess,
                                  cc_preprocess=args.cc_preprocess, animate=animate,
+                                 step_by_step=step_by_step,
                                  all_seg_preprocess=args.all_segmenter_preprocess,
                                  all_cc_preprocess=args.all_cc_preprocess,
                                  force_centers=args.force_centers, use_gpu=use_gpu,

@@ -33,11 +33,18 @@ from collections import defaultdict
 
 # Debug flag - set via environment variable
 DEBUG = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes')
+LOG_DIR = "log"
+_debug_log_file = None
 
-def debug_print(*args, **kwargs):
-    """Print only if DEBUG is enabled."""
+def debug_print(msg):
+    """Write debug message to log file if DEBUG is enabled."""
+    global _debug_log_file
     if DEBUG:
-        print(*args, **kwargs)
+        os.makedirs(LOG_DIR, exist_ok=True)
+        if _debug_log_file is None:
+            _debug_log_file = open(os.path.join(LOG_DIR, "debug.log"), "a")
+        _debug_log_file.write(f"[DEBUG] {msg}\n")
+        _debug_log_file.flush()
 
 from Segmenter import Segmenter
 from cube_evaluation import (
@@ -173,7 +180,9 @@ class AdaptiveEvaluator:
                 seen_combos.add((seg_pp, cc_pp))
 
             # Add untried combinations with zero score
-            for seg_pp in methods:
+            # For brightness-otsu, only use 'none' for seg preprocessing (Otsu is adaptive)
+            seg_pp_methods = ['none'] if seg_name == 'brightness-otsu' else methods
+            for seg_pp in seg_pp_methods:
                 for cc_pp in methods:
                     if (seg_pp, cc_pp) not in seen_combos:
                         ranked = RankedCombination(
@@ -206,32 +215,55 @@ class AdaptiveEvaluator:
         Returns:
             Dict with evaluation results
         """
+        eval_start = time.time()
         segmenter = self._get_segmenter(segmenter_name)
 
         # Stage 1: Segment all faces with preprocessing
+        # Skip seg preprocessing for brightness-otsu (Otsu is adaptive)
+        skip_seg_preprocess = segmenter_name == 'brightness-otsu'
         facelets_by_face = {}
+        seg_total_time = 0
         for face_name, image in face_images.items():
-            # Apply segmentation preprocessing
-            if seg_preprocess and seg_preprocess.lower() != 'none':
+            face_start = time.time()
+
+            # Apply segmentation preprocessing (unless brightness-otsu)
+            if not skip_seg_preprocess and seg_preprocess and seg_preprocess.lower() != 'none':
+                preproc_start = time.time()
                 processed = preprocessor.apply(seg_preprocess, image)
+                preproc_time = time.time() - preproc_start
             else:
                 processed = image
+                preproc_time = 0
 
             # Segment
+            segment_start = time.time()
             facelets = segmenter.segment(processed)
+            segment_time = time.time() - segment_start
+
+            face_total = time.time() - face_start
+            seg_total_time += face_total
+            debug_print(f"  {segmenter_name}/{face_name}: preproc={preproc_time*1000:.1f}ms, seg={segment_time*1000:.1f}ms")
+
             facelets_by_face[face_name] = facelets
 
         # Stage 2: Apply CC preprocessing and classify
+        cc_start = time.time()
         preprocessed_facelets = {}
         for face_name, facelets in facelets_by_face.items():
             preprocessed_facelets[face_name] = _preprocess_facelets_vectorized(
                 facelets, preprocessor, cc_preprocess
             )
+        cc_time = time.time() - cc_start
 
         # Stage 3: Classify
+        classify_start = time.time()
         cube_data, conf_scores, is_valid, total_conf, details = evaluate_preprocessing_combination_batch(
             preprocessed_facelets, classifier, force_centers
         )
+        classify_time = time.time() - classify_start
+
+        eval_total = time.time() - eval_start
+        debug_print(f"  {segmenter_name} total: seg={seg_total_time*1000:.1f}ms, cc_preproc={cc_time*1000:.1f}ms, classify={classify_time*1000:.1f}ms, total={eval_total*1000:.1f}ms")
 
         return {
             'segmenter_name': segmenter_name,
@@ -287,7 +319,9 @@ class AdaptiveEvaluator:
         all_combos = []
         methods = preprocessor.get_available_methods()
         for seg_name in self.all_segmenters:
-            for seg_pp in methods:
+            # For brightness-otsu, only use 'none' for seg preprocessing
+            seg_pp_methods = ['none'] if seg_name == 'brightness-otsu' else methods
+            for seg_pp in seg_pp_methods:
                 for cc_pp in methods:
                     combo_key = (seg_name, seg_pp, cc_pp)
                     if combo_key not in tried_combinations:
@@ -372,9 +406,9 @@ class AdaptiveEvaluator:
         if verbose:
             print(f"\nAdaptive evaluation: searching for confirmed result...", end='', flush=True)
 
-        debug_print(f"\n  {len(self.all_segmenters)} segmenters, {total_combos} total combinations")
-        debug_print(f"  Max attempts: {max_attempts}, combos per round per segmenter: {combos_per_round}")
-        debug_print(f"  Will accept unconfirmed after {fallback_after} attempts if needed")
+        debug_print(f"{len(self.all_segmenters)} segmenters, {total_combos} total combinations")
+        debug_print(f"Max attempts: {max_attempts}, combos per round per segmenter: {combos_per_round}")
+        debug_print(f"Will accept unconfirmed after {fallback_after} attempts if needed")
 
         all_results = []
         valid_results = []  # Store all valid results to find matching pair
@@ -390,7 +424,7 @@ class AdaptiveEvaluator:
 
         for i, combo in enumerate(interleaved_order):
             if i >= max_attempts:
-                debug_print(f"\n  Reached max attempts ({max_attempts})")
+                debug_print(f"Reached max attempts ({max_attempts})")
                 break
 
             combo_key = (combo.segmenter_name, combo.seg_preprocess, combo.cc_preprocess)
@@ -402,12 +436,12 @@ class AdaptiveEvaluator:
             if combo.segmenter_name != current_segmenter:
                 current_segmenter = combo.segmenter_name
                 valid_count = len(valid_results)
-                debug_print(f"\n  [{combo.segmenter_name}] (valid so far: {valid_count})")
+                debug_print(f"--- {combo.segmenter_name} --- (valid so far: {valid_count})")
 
             attempt_num = len(all_results) + 1
             rate_str = f"{combo.success_rate*100:.0f}%" if combo.attempts > 0 else "new"
-            debug_print(f"    [{attempt_num}] seg={combo.seg_preprocess}, cc={combo.cc_preprocess} ({rate_str})",
-                  end='', flush=True)
+            # Log attempt start (result will be logged separately after evaluation)
+            debug_print(f"[{attempt_num}] {combo.segmenter_name} seg={combo.seg_preprocess}, cc={combo.cc_preprocess} ({rate_str})")
 
             try:
                 result = self._evaluate_combination(
@@ -421,8 +455,8 @@ class AdaptiveEvaluator:
                 if verbose and not DEBUG:
                     print('.', end='', flush=True)
 
-                status = " VALID" if result['is_valid'] else ""
-                debug_print(f"{status} (conf: {result['total_confidence']:.0f})")
+                status = "VALID" if result['is_valid'] else "invalid"
+                debug_print(f"  -> {status} (conf: {result['total_confidence']:.0f})")
 
                 if result['is_valid']:
                     # Track when we found first valid result
@@ -436,11 +470,9 @@ class AdaptiveEvaluator:
                             # Found matching pair - confirmed!
                             confirmed_result = result
                             attempts_to_confirm = len(all_results)
-                            debug_print(f"\n  CONFIRMED! Two identical valid results found!")
-                            debug_print(f"    Match: {prev_result['segmenter_name']} | "
-                                  f"seg={prev_result['seg_method']} | cc={prev_result['cc_method']}")
-                            debug_print(f"    With:  {result['segmenter_name']} | "
-                                  f"seg={result['seg_method']} | cc={result['cc_method']}")
+                            debug_print(f"CONFIRMED! Two identical valid results found!")
+                            debug_print(f"  Match: {prev_result['segmenter_name']} | seg={prev_result['seg_method']} | cc={prev_result['cc_method']}")
+                            debug_print(f"  With:  {result['segmenter_name']} | seg={result['seg_method']} | cc={result['cc_method']}")
                             break
 
                     valid_results.append(result)
@@ -456,9 +488,8 @@ class AdaptiveEvaluator:
                 if first_valid_at is not None and not confirmed_result:
                     attempts_since_first = len(all_results) - first_valid_at
                     if attempts_since_first >= fallback_after:
-                        debug_print(f"\n  FALLBACK: Accepting unconfirmed result after {attempts_since_first} attempts")
-                        debug_print(f"    Using: {fallback_result['segmenter_name']} | "
-                              f"seg={fallback_result['seg_method']} | cc={fallback_result['cc_method']}")
+                        debug_print(f"FALLBACK: Accepting unconfirmed result after {attempts_since_first} attempts")
+                        debug_print(f"  Using: {fallback_result['segmenter_name']} | seg={fallback_result['seg_method']} | cc={fallback_result['cc_method']}")
                         break
 
             except Exception as e:
@@ -498,19 +529,17 @@ class AdaptiveEvaluator:
         elapsed = time.time() - start_time
 
         # Debug details
-        debug_print(f"\nCompleted in {elapsed:.1f}s: {len(all_results)} combinations evaluated")
-        debug_print(f"  Valid results found: {len(valid_results)}")
+        debug_print(f"Completed in {elapsed:.1f}s: {len(all_results)} combinations evaluated")
+        debug_print(f"Valid results found: {len(valid_results)}")
 
         # Simple user-facing output
         if verbose:
             if confirmed_result:
                 print(f" confirmed in {elapsed:.1f}s ({attempts_to_confirm} attempts)")
-                debug_print(f"  Result: {confirmed_result['segmenter_name']} | "
-                      f"seg={confirmed_result['seg_method']} | cc={confirmed_result['cc_method']}")
+                debug_print(f"Result: {confirmed_result['segmenter_name']} | seg={confirmed_result['seg_method']} | cc={confirmed_result['cc_method']}")
             elif use_fallback:
                 print(f" fallback in {elapsed:.1f}s (could not confirm)")
-                debug_print(f"  Result: {fallback_result['segmenter_name']} | "
-                      f"seg={fallback_result['seg_method']} | cc={fallback_result['cc_method']}")
+                debug_print(f"Result: {fallback_result['segmenter_name']} | seg={fallback_result['seg_method']} | cc={fallback_result['cc_method']}")
             elif valid_results:
                 print(f"\n  WARNING: {len(valid_results)} valid results but could not confirm")
             else:

@@ -562,7 +562,7 @@ if __name__ == '__main__':
     metrics = PreprocessorMetrics('test_metrics.json')
 
     # Simulate results for different segmenters
-    segmenters = ['contour-neighbor', 'brightness-otsu', 'auto']
+    segmenters = ['contour-neighbor', 'brightness-otsu', 'grid-division']
     preprocess_methods = ['none', 'clahe', 'bilateral', 'sharpen', 'histeq']
 
     for _ in range(100):

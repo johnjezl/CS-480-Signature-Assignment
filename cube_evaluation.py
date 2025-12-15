@@ -25,6 +25,21 @@ import multiprocessing
 import time
 import os
 
+# Debug logging
+DEBUG = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes')
+LOG_DIR = "log"
+_debug_log_file = None
+
+def debug_print(msg):
+    """Write debug message to log file if DEBUG is enabled."""
+    global _debug_log_file
+    if DEBUG:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        if _debug_log_file is None:
+            _debug_log_file = open(os.path.join(LOG_DIR, "debug.log"), "a")
+        _debug_log_file.write(f"[DEBUG] {msg}\n")
+        _debug_log_file.flush()
+
 # Face names for the solver (in order of input)
 FACE_NAMES = ['up', 'down', 'front', 'back', 'left', 'right']
 FACE_DISPLAY_NAMES = ['Up (Yellow)', 'Down (White)', 'Front (Blue)',
@@ -143,14 +158,26 @@ def _segment_face_with_preprocess(args):
     """Helper function for parallel segmentation preprocessing."""
     seg_m, face_name, image, preprocessor, segmenter = args
 
+    start_time = time.time()
+
     # Apply segmentation preprocessing
     if seg_m and seg_m.lower() != 'none':
+        preprocess_start = time.time()
         processed_image = preprocessor.apply(seg_m, image)
+        preprocess_time = time.time() - preprocess_start
     else:
         processed_image = image
+        preprocess_time = 0
 
     # Segment the face
+    segment_start = time.time()
     facelets = segmenter.segment(processed_image)
+    segment_time = time.time() - segment_start
+
+    total_time = time.time() - start_time
+    debug_print(f"Segment {face_name} (seg={seg_m}): preprocess={preprocess_time*1000:.1f}ms, "
+                f"segment={segment_time*1000:.1f}ms, total={total_time*1000:.1f}ms")
+
     return seg_m, face_name, facelets
 
 
@@ -471,7 +498,8 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
                                segmenter_name: str = 'unknown', force_centers=False,
                                verbose=True, record_metrics=True,
                                early_stop_confidence=None,
-                               seg_methods_list=None, cc_methods_list=None):
+                               seg_methods_list=None, cc_methods_list=None,
+                               max_workers=None):
     """
     Evaluate ALL preprocessing combinations and return results.
 
@@ -490,6 +518,7 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
         early_stop_confidence: If set, stop early when a result exceeds this
         seg_methods_list: Optional explicit list of segmentation preprocessing methods
         cc_methods_list: Optional explicit list of CC preprocessing methods
+        max_workers: Max thread pool workers (default: min(32, cpu_count + 4))
 
     Returns:
         tuple: (best_result, all_results)
@@ -507,7 +536,7 @@ def evaluate_all_combinations(face_images, segmenter, classifier, preprocessor,
         early_stop_confidence=early_stop_confidence,
         seg_methods_list=seg_methods_list,
         cc_methods_list=cc_methods_list,
-        max_workers = 4
+        max_workers=max_workers
     )
 
     if best_cube_data is not None:

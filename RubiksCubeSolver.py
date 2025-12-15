@@ -109,14 +109,14 @@ class RubiksCubeSolver:
         if self.debug:
             print(msg)
 
-    def get_segmenter(self, name: str = 'auto') -> Any:
+    def get_segmenter(self, name: str = 'contour-neighbor') -> Any:
         """
         Get a segmenter by name, creating it if necessary.
 
         Segmenters are cached to avoid repeated creation.
 
         Args:
-            name: Segmenter name (auto, brightness-otsu, contour-neighbor, etc.)
+            name: Segmenter name (brightness-otsu, contour-neighbor, etc.)
 
         Returns:
             Segmenter instance
@@ -135,7 +135,7 @@ class RubiksCubeSolver:
         return self.preprocessor.get_available_methods()
 
     def process_face(self, image: np.ndarray, face_name: str = 'unknown',
-                     segmenter_name: str = 'auto',
+                     segmenter_name: str = 'contour-neighbor',
                      seg_preprocess: Optional[str] = None,
                      cc_preprocess: Optional[str] = None,
                      display: bool = False) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -185,7 +185,7 @@ class RubiksCubeSolver:
         return classifications, facelets
 
     def solve_from_images(self, face_images: Dict[str, np.ndarray],
-                          segmenter_name: str = 'auto',
+                          segmenter_name: str = 'contour-neighbor',
                           seg_preprocess: Optional[str] = None,
                           cc_preprocess: Optional[str] = None,
                           force_centers: bool = False,

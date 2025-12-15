@@ -3,9 +3,9 @@
 Metrics Test Script V2
 
 Optimized version of run_metrics_test that:
-1. Excludes "auto" segmenter (which delegates to other segmenters anyway)
-2. Skips segmenter preprocessing for brightness-otsu (v5) since Otsu thresholding
+1. Skips segmenter preprocessing for brightness-otsu (v5) since Otsu thresholding
    is adaptive and doesn't benefit from preprocessing
+2. Adds memory monitoring for debugging on memory-constrained systems
 
 Usage:
     python tools/run_metrics_test_v2.py
@@ -24,6 +24,10 @@ import time
 import argparse
 import gc
 from datetime import datetime
+
+# Early detection of --debug flag before imports (modules check DEBUG at import time)
+if '--debug' in sys.argv or '-d' in sys.argv:
+    os.environ['DEBUG'] = '1'
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -105,9 +109,6 @@ def print_memory_status(label="Memory"):
     return info
 
 
-# Segmenters to exclude (auto just delegates to others)
-EXCLUDED_SEGMENTERS = {'auto'}
-
 # Segmenters that don't benefit from segmentation preprocessing
 # brightness-otsu uses Otsu thresholding which is adaptive
 NO_SEG_PREPROCESS_SEGMENTERS = {'brightness-otsu'}
@@ -168,14 +169,13 @@ def format_time_remaining(seconds):
 
 
 def get_segmenters_to_test():
-    """Get list of segmenters excluding auto."""
-    all_segmenters = Segmenter.get_available_segmenters()
-    return [s for s in all_segmenters if s not in EXCLUDED_SEGMENTERS]
+    """Get list of all available segmenters."""
+    return Segmenter.get_available_segmenters()
 
 
 def run_test_for_image_set(image_set_path, image_set_name, segmenter_names, classifier,
                            preprocessor, use_gpu=True, verbose=True,
-                           global_progress=None):
+                           global_progress=None, max_workers=None):
     """
     Run all segmenter and preprocessing combinations for a single image set.
 
@@ -269,7 +269,8 @@ def run_test_for_image_set(image_set_path, image_set_name, segmenter_names, clas
             force_centers=False,
             verbose=verbose,
             record_metrics=True,
-            seg_methods_list=seg_methods_list  # None = all, ['none'] = skip seg preprocess
+            seg_methods_list=seg_methods_list,  # None = all, ['none'] = skip seg preprocess
+            max_workers=max_workers
         )
 
         elapsed = time.time() - start_time
@@ -346,8 +347,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Optimizations in V2:
-  - Excludes 'auto' segmenter (it just delegates to other segmenters)
   - Skips segmenter preprocessing for brightness-otsu (Otsu is adaptive)
+  - Adds memory monitoring for debugging on memory-constrained systems
 
 Examples:
   %(prog)s                              # Run all tests
@@ -365,8 +366,7 @@ Examples:
                              'Options: root, black_background, camera_captures, grey_background')
 
     parser.add_argument('--segmenter', '-s', type=str, action='append',
-                        help='Segmenter to test (can specify multiple). '
-                             'Note: "auto" is excluded by default in v2')
+                        help='Segmenter to test (can specify multiple)')
 
     parser.add_argument('--clear-metrics', '-c', action='store_true',
                         help='Clear existing metrics before running tests')
@@ -384,7 +384,15 @@ Examples:
     parser.add_argument('--quiet', '-q', action='store_true',
                         help='Reduce output verbosity')
 
+    parser.add_argument('--debug', '-d', action='store_true',
+                        help='Enable debug logging output')
+
     args = parser.parse_args()
+
+    # Enable debug mode if requested
+    if args.debug:
+        os.environ['DEBUG'] = '1'
+        print("[DEBUG] Debug mode enabled")
 
     print("\n" + "╔" + "═" * 78 + "╗")
     print("║" + "OPTIMIZED PREPROCESSING METRICS TEST (V2)".center(78) + "║")
@@ -415,17 +423,15 @@ Examples:
     else:
         image_sets_to_test = available_sets
 
-    # Determine which segmenters to test (excluding 'auto' by default)
+    # Determine which segmenters to test
     default_segmenters = get_segmenters_to_test()
-    print(f"\nSegmenters to test (excluding 'auto'): {', '.join(default_segmenters)}")
+    print(f"\nSegmenters to test: {', '.join(default_segmenters)}")
     print(f"  Note: brightness-otsu will skip segmenter preprocessing (Otsu is adaptive)")
 
     if args.segmenter:
         segmenters_to_test = []
         for seg in args.segmenter:
-            if seg in EXCLUDED_SEGMENTERS:
-                print(f"  WARNING: Segmenter '{seg}' is excluded in v2, skipping")
-            elif Segmenter.is_valid(seg):
+            if Segmenter.is_valid(seg):
                 segmenters_to_test.append(seg)
             else:
                 print(f"  WARNING: Segmenter '{seg}' not found, skipping")
@@ -440,6 +446,14 @@ Examples:
     else:
         preprocessor = ImagePreprocessor()
         print("\nUsing CPU preprocessor")
+
+    # Show thread count
+    if args.max_workers:
+        print(f"Max worker threads: {args.max_workers}")
+    else:
+        import os as _os
+        default_workers = min(32, (_os.cpu_count() or 1) + 4)
+        print(f"Max worker threads: {default_workers} (default)")
 
     num_methods = len(preprocessor.get_available_methods())
 
@@ -519,7 +533,8 @@ Examples:
             preprocessor,
             use_gpu=use_gpu,
             verbose=not args.quiet,
-            global_progress=global_progress
+            global_progress=global_progress,
+            max_workers=args.max_workers
         )
         all_summaries.append(summary)
 

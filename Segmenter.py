@@ -30,7 +30,6 @@ from facelet_segmenter_v2 import FaceletSegmenterV2
 from facelet_segmenter_v3 import FaceletSegmenterV3
 from facelet_segmenter_v4 import FaceletSegmenterV4
 from facelet_segmenter_v5 import FaceletSegmenterV5
-from facelet_segmenter_auto import FaceletSegmenterAuto
 
 
 # Registry of segmenters with meaningful names
@@ -65,13 +64,6 @@ _SEGMENTERS: Dict[str, Dict[str, Any]] = {
         'details': 'V5 segmenter (Greg\'s CV approach). Uses HSV value channel with Otsu '
                    'thresholding to detect bright stickers against dark cube plastic. '
                    'Works well when stickers are brighter than the cube body.'
-    },
-    'auto': {
-        'class': FaceletSegmenterAuto,
-        'description': 'Auto-select best algorithm based on image analysis',
-        'details': 'Analyzes the image to choose between brightness-otsu (v5) and '
-                   'contour-perspective (v2) based on background brightness, saturation, '
-                   'and edge complexity.'
     },
 }
 
@@ -141,7 +133,6 @@ class Segmenter:
                 - 'contour-neighbor': Neighbor-validated detection (v3)
                 - 'canny-square': Canny + square detection (v4)
                 - 'brightness-otsu': Otsu thresholding (v5)
-                - 'auto': Auto-select best algorithm
             output_size: Size of output facelet images (default 64x64)
             **kwargs: Additional arguments passed to the segmenter constructor
 
