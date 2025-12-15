@@ -277,18 +277,18 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
     for _ in range(10):
         dm.waitKey(1)
 
-    # Flush stdin to clear any buffered input
+    # Flush stdin to clear any buffered input (Unix only)
     try:
         import termios
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
-    except (ImportError, termios.error):
-        pass
+    except Exception:
+        pass  # termios not available on Windows/Mac or flush failed
 
     print(f"\nAnimating {len(moves_list)} moves...")
     if step_by_step:
-        print("Step-by-step mode: Press Enter after each move to proceed, 'q' to skip")
+        print("Step-by-step mode: Press Enter/Space to advance, 'q' to skip (click window first)")
     else:
-        print("In terminal: press Enter to pause/resume, 'q' to skip")
+        print("Press Enter/Space to pause/resume, 'q' to skip (click window first)")
 
     paused = False
     move_idx = 0
@@ -301,7 +301,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
             instruction = move_to_instruction(move)
             print(f"\n>>> Step {move_idx + 1}/{len(moves_list)}: {move}")
             print(f"    {instruction}")
-            print("    Press Enter to continue, 'q' to skip...")
+            print("    Press Enter/Space to continue, 'q' to skip...")
 
         # Animation loop - loops until user advances (step_by_step) or completes (continuous)
         frame = 0
@@ -336,10 +336,37 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
 
             dm.imshow(window_name, img)
 
-            # Brief wait to control animation speed
-            dm.waitKey(delay_ms if not paused else 50)
+            # Brief wait to control animation speed and check for key presses
+            key = dm.waitKey(delay_ms if not paused else 50)
 
-            # Check for terminal input (more reliable than cv2.waitKey on Jetson)
+            # Check for key press from OpenCV window (cross-platform)
+            if key != -1:
+                key_char = chr(key & 0xFF).lower()
+                if key_char == 'q':
+                    print("\nAnimation skipped.")
+                    dm.destroyAllWindows()
+                    dm.waitKey(1)
+                    return
+                elif key == 13 or key == 10 or key_char == '\r' or key_char == '\n':  # Enter key
+                    if step_by_step:
+                        advance_to_next = True
+                    else:
+                        paused = not paused
+                        if paused:
+                            print("Paused. Press Enter/Space to resume, 'q' to skip.")
+                        else:
+                            print("Resumed.")
+                elif key == 32:  # Space bar
+                    if step_by_step:
+                        advance_to_next = True
+                    else:
+                        paused = not paused
+                        if paused:
+                            print("Paused. Press Enter/Space to resume, 'q' to skip.")
+                        else:
+                            print("Resumed.")
+
+            # Also check for terminal input on Unix systems
             try:
                 if select.select([sys.stdin], [], [], 0)[0]:
                     char = sys.stdin.read(1)
@@ -350,23 +377,15 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
                         return
                     elif char == '\n':
                         if step_by_step:
-                            # Advance to next move
                             advance_to_next = True
                         else:
-                            # Toggle pause
                             paused = not paused
                             if paused:
                                 print("Paused. Press Enter to resume, 'q' to skip.")
                             else:
                                 print("Resumed.")
-                    elif char == ' ' and not step_by_step:
-                        paused = not paused
-                        if paused:
-                            print("Paused. Press space/enter to resume, 'q' to skip.")
-                        else:
-                            print("Resumed.")
-            except (TypeError, ValueError, OSError):
-                pass
+            except Exception:
+                pass  # select doesn't work on Windows
 
             # Advance animation frame if not paused
             if not paused:
@@ -380,8 +399,19 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
                         # Show final frame during pause, but check for input
                         pause_end = time.time() + pause_at_end_ms / 1000.0
                         while time.time() < pause_end:
-                            dm.waitKey(50)
-                            # Check for user input during pause
+                            key = dm.waitKey(50)
+                            # Check for key press from OpenCV window
+                            if key != -1:
+                                key_char = chr(key & 0xFF).lower()
+                                if key_char == 'q':
+                                    print("\nAnimation skipped.")
+                                    dm.destroyAllWindows()
+                                    dm.waitKey(1)
+                                    return
+                                elif key == 13 or key == 10 or key == 32:  # Enter or Space
+                                    advance_to_next = True
+                                    break
+                            # Also check for terminal input on Unix
                             try:
                                 if select.select([sys.stdin], [], [], 0)[0]:
                                     char = sys.stdin.read(1)
@@ -393,7 +423,7 @@ def animate_solution(cube_data, moves_list, delay_ms=30, frames_per_move=40,
                                     elif char == '\n':
                                         advance_to_next = True
                                         break
-                            except (TypeError, ValueError, OSError):
+                            except Exception:
                                 pass
                     # Loop the animation continuously until user presses Enter
                     frame = 0
