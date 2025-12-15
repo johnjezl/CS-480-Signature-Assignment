@@ -197,6 +197,27 @@ class AdaptiveEvaluator:
 
             # Sort by score (descending)
             seg_combos.sort(key=lambda x: x.score, reverse=True)
+
+            # Move locked pairs to the front (in order)
+            locked_pairs = metrics_data.get('locked_pairs', {}).get(seg_name, [])
+            if locked_pairs:
+                locked_combos = []
+                unlocked_combos = []
+                locked_set = {(p[0], p[1]) for p in locked_pairs}
+
+                for combo in seg_combos:
+                    if (combo.seg_preprocess, combo.cc_preprocess) in locked_set:
+                        locked_combos.append(combo)
+                    else:
+                        unlocked_combos.append(combo)
+
+                # Sort locked combos by their order in locked_pairs
+                locked_order = {(p[0], p[1]): i for i, p in enumerate(locked_pairs)}
+                locked_combos.sort(key=lambda x: locked_order.get(
+                    (x.seg_preprocess, x.cc_preprocess), 999))
+
+                seg_combos = locked_combos + unlocked_combos
+
             self.ranked_by_segmenter[seg_name] = seg_combos
 
     def _get_segmenter(self, name: str) -> Any:
