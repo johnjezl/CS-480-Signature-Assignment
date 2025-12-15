@@ -31,7 +31,7 @@ def run_pip(packages, description=""):
     for package in packages:
         print(f"\nInstalling {package}...")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", package])
             print(f"  [OK] {package} installed successfully")
         except subprocess.CalledProcessError as e:
             print(f"  [ERROR] Failed to install {package}: {e}")
@@ -139,7 +139,7 @@ def install_jetson_pytorch():
 
     try:
         subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--no-cache", wheel_url
+            sys.executable, "-m", "pip", "install", "--break-system-packages", "--no-cache", wheel_url
         ])
         print("\n  [OK] PyTorch for Jetson installed successfully")
 
@@ -181,7 +181,7 @@ def install_pytorch(for_jetson=False, skip=False):
     print(f"\nRunning: pip install {' '.join(cmd)}")
 
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install"] + cmd)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages"] + cmd)
         print("\n  [OK] PyTorch installed successfully")
         return True
     except subprocess.CalledProcessError as e:
@@ -256,7 +256,7 @@ def main():
     print("\n" + "=" * 50)
     print("  Upgrading pip")
     print("=" * 50)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--break-system-packages", "--upgrade", "pip"])
 
     # Core dependencies
     core_packages = [

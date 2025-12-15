@@ -1,174 +1,314 @@
 # Rubik's Cube Scanner & Solver
 
-A complete computer vision and AI system that scans a Rubik's Cube using a camera or image files, identifies the colors of each facelet using a CNN classifier, and solves the cube using an IDA* (Iterative Deepening A*) algorithm with pattern database heuristics.
+A complete end-to-end computer vision and AI system that scans a Rubik's Cube using a camera or image files, identifies the colors of each facelet using a CNN classifier, and solves the cube using the Kociemba two-phase algorithm or IDA* with pattern database heuristics. Features cross-platform support (Windows, macOS, Linux, NVIDIA Jetson), GPU acceleration, and interactive 3D solution animation.
 
 ## Features
 
-- **CNN-Based Color Classification**: Deep learning model trained on synthetic data to classify the 6 Rubik's Cube colors (white, yellow, red, orange, blue, green)
-- **Facelet Segmentation**: Multiple segmentation approaches available:
-  - `FaceletSegmenter` (V1): Standard grid-based segmentation
-  - `FaceletSegmenterV2`: Contour-based detection with perspective correction
-  - `FaceletSegmenterV3`: Contour-based facelet detection
-  - `FaceletSegmenterV4`: OpenCV square detection (Canny + contours)
-  - `FaceletSegmenterV5`: Brightness-based Otsu thresholding (Greg's CV approach)
-- **IDA* Solver**: Optimal solving algorithm using pattern database heuristics for corner orientation, edge orientation, and UD-slice positioning
-- **Kociemba Solver**: Fast two-phase algorithm for quick solutions
-- **Jetson Support**: Native camera capture on NVIDIA Jetson platforms with IMX219 camera
-- **Multiple Input Modes**: File-based or camera-based scanning
+### Computer Vision Pipeline
+- **5 Segmentation Algorithms**: Multiple approaches for extracting facelets from cube images
+  - Grid Division: Fast grid-based subdivision for centered cubes
+  - Contour-Perspective: Handles tilted/rotated cubes with perspective correction
+  - Contour-Neighbor: Robust neighbor validation (default, most reliable)
+  - Canny-Square: Edge-based square detection for high-contrast images
+  - Brightness-Otsu: Adaptive thresholding for varied lighting conditions
+
+- **20+ Preprocessing Methods**: Comprehensive image enhancement options
+  - Filters: bilateral, morphological operations, median, gaussian blur
+  - Contrast: CLAHE (LAB/HSV), histogram equalization, contrast stretch, gamma correction
+  - Color: saturation boost, white balance
+  - Combined pipelines for optimal results
+
+- **CNN-Based Color Classification**: Deep learning model trained on synthetic data to classify 6 Rubik's Cube colors (white, yellow, red, orange, blue, green) with confidence scores
+
+### Solving Algorithms
+- **Kociemba Solver**: Fast two-phase algorithm (typically < 1 second)
+- **IDA* Solver**: Iterative Deepening A* with pattern database heuristics
+  - Corner orientation PDB (2,187 states)
+  - Full corner PDB (88,179,840 states)
+
+### Advanced Features
+- **Adaptive Evaluation**: Intelligently selects best preprocessing combinations using historical metrics
+- **Two-Result Confirmation**: Requires two matching valid results for reliable cube state detection
+- **Orientation Correction**: Automatically detects and fixes rotated/flipped faces using edge constraints
+- **3D Solution Animation**: Interactive step-by-step visualization with human-readable move instructions
+- **GPU Acceleration**: NVIDIA VPI support on Jetson for faster preprocessing
+
+### Platform Support
+| Platform | Camera | GPU Acceleration | Display |
+|----------|--------|------------------|---------|
+| NVIDIA Jetson | IMX219 camera support | VPI acceleration | Native OpenCV |
+| Windows | File-based only | CPU | Native OpenCV |
+| macOS | File-based only | CPU | Native OpenCV |
+| Linux | File-based only | CPU | X11/Wayland |
 
 ## Project Structure
 
 ```
-├── main.py                     # Main application entry point
-├── ColorClassifierCNN.py       # CNN model architecture
-├── FaceletColorClassifier.py   # Classifier wrapper using trained CNN
-├── facelet_segmenter.py        # V1: Standard grid segmenter
-├── facelet_segmenter_v2.py     # V2: Contour-based with perspective correction
-├── facelet_segmenter_v3.py     # V3: Contour-based facelet detection
-├── facelet_segmenter_v4.py     # V4: OpenCV square detection (Canny + contours)
-├── facelet_segmenter_v5.py     # V5: Brightness-based Otsu thresholding
-├── IDASolver.py                # IDA* and Kociemba solvers
-├── Cube.py                     # Cube state representation
-├── Facelet_to_Cube.py          # Convert facelet colors to cube state
-├── JetsonCamera.py             # Jetson camera interface
-├── GregsCV.py                  # Original Greg's CV implementation (Colab)
-├── datasets/                   # Training and test data
-│   ├── training_dataset/       # Synthetic training images
-│   └── real_facelets/          # Real-world facelet samples
-├── models/                     # Trained model checkpoints
-├── pdb_cache/                  # Pattern database cache files
-├── tools/                      # Training and utility scripts
-│   ├── train_color_classifier.py
-│   ├── generate_full_dataset.py
-│   ├── SyntheticFaceletGenerator.py
-│   ├── analyze_facelet_palette.py
-│   ├── test_on_real_data.py
-│   └── ...
-└── log/                        # Captured face images and facelets
+CS-480-Signature-Assignment/
+├── main.py                              # Main menu-driven application
+├── RubiksCubeSolver.py                  # High-level solver orchestration
+│
+├── Segmentation
+│   ├── Segmenter.py                     # Segmenter factory/registry
+│   ├── FaceletSegmenterGridDivision.py  # V1: Grid-based subdivision
+│   ├── FaceletSegmenterContourPerspective.py  # V2: Perspective correction
+│   ├── FaceletSegmenterContourNeighbor.py     # V3: Neighbor validation (default)
+│   ├── FaceletSegmenterCannySquare.py   # V4: Canny edge detection
+│   └── FaceletSegmenterBrightnessOtsu.py      # V5: Otsu thresholding
+│
+├── Color Classification
+│   ├── ColorClassifierCNN.py            # CNN model architecture
+│   └── FaceletColorClassifier.py        # Classifier wrapper with batch inference
+│
+├── Preprocessing
+│   ├── ImagePreprocessor.py             # CPU-based preprocessing (20+ methods)
+│   └── GPUImagePreprocessor.py          # GPU-accelerated preprocessing (Jetson)
+│
+├── Solvers
+│   ├── IDASolver.py                     # IDA* and Kociemba solvers
+│   ├── Cube.py                          # Cube state representation
+│   └── Facelet_to_Cube.py               # Facelet-to-cube state conversion
+│
+├── Evaluation & Metrics
+│   ├── cube_evaluation.py               # Cube state validation functions
+│   ├── adaptive_evaluator.py            # Smart preprocessing selection
+│   ├── PreprocessorMetrics.py           # Historical metrics tracking
+│   └── CubeOrientationCorrector.py      # Face orientation correction
+│
+├── Visualization
+│   ├── CubeRenderer.py                  # 3D cube rendering & animation
+│   └── DisplayManager.py                # Cross-platform display abstraction
+│
+├── Camera
+│   └── JetsonCamera.py                  # Jetson IMX219 camera interface
+│
+├── models/                              # Trained model checkpoints
+│   ├── best_model.pth                   # PyTorch model
+│   └── best_model.onnx                  # ONNX model for faster inference
+│
+├── datasets/                            # Training and test data
+│   ├── training_dataset/                # Synthetic training images
+│   └── real_facelets/                   # Real-world facelet samples
+│
+├── pdb_cache/                           # Pattern database cache files
+├── log/                                 # Debug logs
+│
+└── tools/                               # Training and utility scripts
+    ├── train_color_classifier.py        # Train CNN model
+    ├── generate_full_dataset.py         # Generate synthetic training data
+    ├── preprocessing_harness.py         # Test preprocessing methods
+    ├── cube_detection_harness.py        # Test detection algorithms
+    ├── analyze_preprocessor_metrics.py  # Analyze historical metrics
+    └── ...
 ```
 
 ## Installation
 
-1. Clone the repository:
+### 1. Clone the Repository
 ```bash
 git clone https://github.com/johnjezl/CS-480-Signature-Assignment.git
 cd CS-480-Signature-Assignment
 ```
 
-2. Install dependencies:
+### 2. Install Dependencies
+
+**Option A: Using pip (Recommended)**
 ```bash
-pip install torch torchvision opencv-python numpy scikit-learn matplotlib seaborn tqdm kociemba
+pip install -r requirements.txt
 ```
 
-Or run the provided installer:
+Then install PyTorch based on your platform:
+- **Windows/Linux with CUDA**: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118`
+- **Windows/Linux CPU-only**: `pip install torch torchvision`
+- **macOS**: `pip install torch torchvision`
+- **Jetson**: PyTorch is pre-installed with JetPack (do NOT reinstall via pip)
+
+**Option B: Using the installer script**
 ```bash
 python install_dependencies.py
 ```
 
+### Dependencies
+- `numpy>=1.20.0` - Numerical computing
+- `opencv-python>=4.5.0` - Computer vision
+- `Pillow>=9.0.0` - Image I/O
+- `torch>=2.0.0` - Deep learning framework
+- `torchvision>=0.15.0` - Vision models
+- `scikit-learn>=1.0.0` - ML utilities
+- `matplotlib>=3.5.0` - Plotting
+- `seaborn>=0.12.0` - Statistical visualization
+- `tqdm>=4.60.0` - Progress bars
+
 ## Usage
 
-### Main Application
-
-Run the main menu-driven application:
+### Command Line Options
 
 ```bash
-python main.py [--display] [--v2] [--v3] [--v4] [--v5] [--rotate]
+python main.py [OPTIONS]
 ```
 
-**Options:**
-- `--display`: Show captured images on display (for Jetson with monitor)
-- `--v2`: Use V2 segmenter (contour-based with perspective correction)
-- `--v3`: Use V3 segmenter (contour-based facelet detection)
-- `--v4`: Use V4 segmenter (OpenCV square detection with Canny + contours)
-- `--v5`: Use V5 segmenter (brightness-based Otsu thresholding - Greg's CV)
-- `--rotate`: Rotate camera images 180 degrees (for inverted camera mounting)
+**Core Options:**
+| Option | Description |
+|--------|-------------|
+| `--segmenter NAME` | Segmentation algorithm (default: contour-neighbor) |
+| `--no-display` | Suppress image display |
+| `--rotate` | Rotate camera images 180° (inverted mounting) |
+| `--debug` | Enable debug logging to log/debug.log |
 
-**Modes:**
-1. **Single Face (File)**: Load an image and classify the 9 facelet colors
-2. **Full Cube (File)**: Load 6 face images from a directory and solve the cube
-3. **Single Face (Camera)**: Capture one face from Jetson camera (Jetson only)
-4. **Full Cube (Camera)**: Capture all 6 faces and solve (Jetson only)
+**Animation Options:**
+| Option | Description |
+|--------|-------------|
+| `--no-animation` | Disable solution animation |
+| `--no-step-by-step` | Continuous animation (no pauses) |
 
-### Full Cube Solving from Files
+**Preprocessing Options:**
+| Option | Description |
+|--------|-------------|
+| `--segmenter-preprocess METHOD` | Single preprocessing method for segmentation |
+| `--cc-preprocess METHOD` | Single preprocessing method for color classification |
+| `--all-segmenter-preprocess` | Try all segmentation preprocessing methods |
+| `--all-cc-preprocess` | Try all color classification preprocessing methods |
+| `--force-centers` | Force center colors to expected values |
 
-To solve a cube from image files:
+**Advanced Options:**
+| Option | Description |
+|--------|-------------|
+| `--nogpu` | Disable GPU acceleration (use CPU only) |
+| `--no-adaptive` | Disable adaptive evaluation |
 
-1. Prepare a directory with 6 images named: `up.jpg`, `down.jpg`, `front.jpg`, `back.jpg`, `left.jpg`, `right.jpg`
-2. Run `python main.py --v5` (or any segmenter version)
-3. Select mode `2` (Full Cube)
-4. Enter the path to your directory
+### Available Segmenters
 
-The solver will output the solution as a sequence of moves (e.g., `R U R' U' F' U2 R`).
+```bash
+python main.py --segmenter <NAME>
+```
 
-### Training the Color Classifier
+| Name | Algorithm | Best For |
+|------|-----------|----------|
+| `grid-division` | Grid-based subdivision | Centered, axis-aligned cubes |
+| `contour-perspective` | Contour + perspective correction | Tilted or rotated cubes |
+| `contour-neighbor` | Contour + neighbor validation | General use (default) |
+| `canny-square` | Canny edge + square detection | High-contrast images |
+| `brightness-otsu` | Otsu thresholding on brightness | Varied lighting, dark cube plastic |
 
-1. Generate synthetic training data:
+### Available Preprocessing Methods
+
+```bash
+python main.py --segmenter-preprocess <METHOD> --cc-preprocess <METHOD>
+```
+
+**Categories:**
+- **None**: `none`
+- **Bilateral Filters**: `bilateral`, `bilateral-strong`
+- **CLAHE**: `clahe-lab`, `clahe-hsv`
+- **Edge/Detail**: `unsharp`, `morph-open`, `morph-close`
+- **Histogram**: `histeq`, `contrast-stretch`
+- **Color Adjustments**: `satboost`, `satboost-mild`, `white-balance`
+- **Gamma Correction**: `gamma-bright`, `gamma-dark`
+- **Smoothing**: `median`, `gaussian`
+- **Combined**: `bilateral-clahe`, `bilateral-sat`, `clahe-sat`, `full-pipeline`
+
+### Operation Modes
+
+**Mode 1: Single Face (File)**
+- Load a single cube face image
+- Classify the 9 facelet colors
+- Display results with confidence scores
+
+**Mode 2: Full Cube (File)**
+- Load 6 face images from a directory
+- Required files: `up.jpg`, `down.jpg`, `front.jpg`, `back.jpg`, `left.jpg`, `right.jpg`
+- Validate cube state (9 of each color)
+- Apply orientation correction
+- Solve and optionally animate the solution
+
+**Mode 3: Single Face (Camera)** - Jetson Only
+- Capture one face via IMX219 camera
+- Same processing as Mode 1
+
+**Mode 4: Full Cube (Camera)** - Jetson Only
+- Capture all 6 faces with guided prompts
+- Same processing as Mode 2
+
+### Examples
+
+**Basic usage with default settings (adaptive mode):**
+```bash
+python main.py
+```
+
+**Use brightness-otsu segmenter with saturation boost:**
+```bash
+python main.py --segmenter brightness-otsu --cc-preprocess satboost
+```
+
+**Try all preprocessing combinations:**
+```bash
+python main.py --all-segmenter-preprocess --all-cc-preprocess
+```
+
+**Disable animation and run in headless mode:**
+```bash
+python main.py --no-display --no-animation
+```
+
+**Jetson with rotated camera:**
+```bash
+python main.py --rotate --segmenter contour-neighbor
+```
+
+## Solution Animation
+
+When solving a cube, the application displays an interactive 3D animation:
+
+- **Step-by-step mode** (default): Loops each move until you press Enter/Space
+- **Continuous mode** (`--no-step-by-step`): Plays through all moves automatically
+
+**Controls** (click the animation window first):
+- `Enter` or `Space` - Advance to next move (step-by-step) / Pause/Resume (continuous)
+- `Q` - Skip animation
+
+Each step shows:
+- 3D cube visualization with the current move animating
+- Move counter (e.g., "Move 5/20: R'")
+- Human-readable instruction (e.g., "Rotate RIGHT face 90° counter-clockwise")
+
+## Training the Color Classifier
+
+### 1. Generate Synthetic Training Data
 ```bash
 python tools/generate_full_dataset.py
 ```
 
-2. Train the CNN model:
+This creates synthetic facelet images with various color palettes, lighting conditions, and augmentations.
+
+### 2. Train the CNN Model
 ```bash
 python tools/train_color_classifier.py
 ```
 
-The trained model will be saved to `models/best_model.pth`.
+The trained model is saved to `models/best_model.pth`.
 
-3. Test on real facelet images:
+### 3. Test on Real Data
 ```bash
 python tools/test_on_real_data.py
 ```
 
-## Tools
-
-| Tool | Description |
-|------|-------------|
-| `generate_full_dataset.py` | Generate synthetic training data with multiple color palettes |
-| `train_color_classifier.py` | Train the CNN color classifier |
-| `test_on_real_data.py` | Evaluate model on real-world facelet images |
-| `SyntheticFaceletGenerator.py` | Generate synthetic facelet images with augmentation |
-| `analyze_facelet_palette.py` | Analyze real facelets to extract color palettes |
-| `interactive_facelet_extrator_tool.py` | Manually extract facelets from cube images |
-| `visualize_facelets.py` | Visualize extracted facelets |
-| `display_log.py` | Display logged face captures |
-| `resize_images.py` | Resize images to 640x480 |
-
-## Segmenter Comparison
-
-| Segmenter | Method | Best For |
-|-----------|--------|----------|
-| V1 (default) | Grid-based with saturation detection | General use, centered cubes |
-| V2 | Contour + perspective correction | Rotated or tilted cubes |
-| V3 | Contour-based facelet detection | Clear cube boundaries |
-| V4 | Canny edge + contour detection | High-contrast images |
-| V5 | Otsu thresholding on brightness | Dark cube plastic with bright stickers |
-
 ## CNN Architecture
 
-The `ColorClassifierCNN` is a lightweight convolutional neural network designed for 64x64 RGB facelet images:
+The `ColorClassifierCNN` is a lightweight convolutional neural network for 64x64 RGB facelet images:
 
 - 3 convolutional blocks with batch normalization and dropout
 - Global average pooling
 - Fully connected classifier head
 - 6-class output (white, yellow, red, orange, blue, green)
+- Model size: < 5MB
 
-## Solvers
-
-### IDA* Solver
-Uses Iterative Deepening A* with multiple pattern database heuristics:
-- **Full Corner PDB**: 8! x 3^7 = 88,179,840 states (permutation + orientation)
-- **Edge Orientation PDB**: 2^11 = 2,048 states
-- **UD-Slice + Edge Orientation**: Combined coordinate for phase 1
-
-### Kociemba Solver
-Two-phase algorithm that solves cubes much faster (typically under 1 second). Used by default for full cube solving.
-
-## Face Orientation
+## Face Orientation Guide
 
 When capturing faces, use this standard orientation:
 
-| Face | Center Color | Top of Frame |
-|------|--------------|--------------|
+| Face | Center Color | Top Edge Color |
+|------|--------------|----------------|
 | Up | Yellow | Green |
 | Down | White | Blue |
 | Front | Blue | Yellow |
@@ -176,11 +316,51 @@ When capturing faces, use this standard orientation:
 | Left | Orange | Yellow |
 | Right | Red | Yellow |
 
-## License
+The orientation corrector will automatically detect and fix most orientation errors using edge constraints.
 
-This project was created for CS 480 - Artificial Intelligence.
+## Tools Reference
+
+| Tool | Description |
+|------|-------------|
+| `train_color_classifier.py` | Train the CNN color classifier |
+| `generate_full_dataset.py` | Generate synthetic training data |
+| `preprocessing_harness.py` | Test preprocessing methods on images |
+| `cube_detection_harness.py` | Evaluate cube detection algorithms |
+| `preprocessing_detection_harness.py` | Combined preprocessing + detection testing |
+| `analyze_preprocessor_metrics.py` | Analyze historical preprocessing metrics |
+| `benchmark_preprocessor.py` | Performance profiling of preprocessing |
+| `SyntheticFaceletGenerator.py` | Generate synthetic facelet images |
+| `analyze_facelet_palette.py` | Extract color palettes from real facelets |
+| `test_on_real_data.py` | Evaluate classifier on real images |
+| `interactive_facelet_extrator_tool.py` | Manually extract facelets from images |
+| `visualize_facelets.py` | Display detected facelets with colors |
+| `resize_images.py` | Batch resize images |
+
+## Troubleshooting
+
+### "GPU: Not available" on Jetson
+- Ensure VPI is installed with JetPack
+- Check that `/opt/nvidia/vpi2/` exists
+- Run with `--debug` to see detailed GPU detection logs
+
+### Animation window unresponsive
+- Click the animation window to give it keyboard focus
+- Press 'Q' to skip if needed
+
+### Segmentation fails
+- Try a different segmenter: `--segmenter brightness-otsu`
+- Enable preprocessing: `--segmenter-preprocess bilateral`
+- Use adaptive mode (default) to automatically find best settings
+
+### Color misclassification
+- Try `--cc-preprocess satboost` to enhance color saturation
+- Use `--force-centers` to constrain center colors
+- Enable `--all-cc-preprocess` to find the best preprocessing
+
 
 ## Authors
 
 - John Jezl
-- Team Members
+- Greg Nott
+- Jon Rocha
+- Janice Bargoria
